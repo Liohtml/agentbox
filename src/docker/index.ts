@@ -196,9 +196,9 @@ export const docker: DockerModule = {
       `${config.entryScriptPath}:${CONTAINER_ENTRY}`,
       "-v",
       `${config.observerAsset}:${CONTAINER_OBSERVER}`,
-      // ── published observer port ─────────────────────────────────────────
+      // ── published observer port (loopback only — never expose to the LAN) ─
       "-p",
-      `${config.observerPort}:${config.observerPort}`,
+      `127.0.0.1:${config.observerPort}:${config.observerPort}`,
       // ── resource limits ─────────────────────────────────────────────────
       "--memory",
       config.memory,
@@ -223,7 +223,7 @@ export const docker: DockerModule = {
 
   async execAttach(config: AgentboxConfig, command?: string[]): Promise<number> {
     const cmd =
-      command ?? ["bash", "-lc", `tmux attach -t ${config.sessionName}`];
+      command ?? ["bash", "-lc", `tmux attach -t '${config.sessionName}'`];
     const args = ["exec", "-it", config.containerName, ...cmd];
     return inherit(args);
   },

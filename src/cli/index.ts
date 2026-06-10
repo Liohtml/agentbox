@@ -104,7 +104,7 @@ async function cmdUp(
     return await docker.execAttach(config);
   }
 
-  console.log(`agentbox: starting sandbox (observer on port ${config.observerPort})…`);
+  console.log(`agentbox: starting sandbox — Observer at http://localhost:${config.observerPort}…`);
   return await docker.runContainer(config, tty);
 }
 
@@ -229,7 +229,8 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
 function dockerUnavailableMessage(): string {
   return (
     "agentbox: Docker is not available.\n" +
-    "Make sure Docker is installed and the daemon is running, then try again.\n" +
+    "Make sure Docker is installed and the daemon is running (on Windows, enable\n" +
+    "Docker Desktop → Settings → Resources → WSL Integration for your distro).\n" +
     "Diagnose with:  agentbox doctor"
   );
 }

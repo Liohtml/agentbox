@@ -6,14 +6,43 @@
   "bin": {
     "agentbox": "bin/agentbox.mjs"
   },
+  "files": [
+    "bin",
+    "src",
+    "assets",
+    "CONTRACT.md"
+  ],
   "scripts": {
     "agentbox": "tsx src/index.ts",
     "doctor": "tsx src/index.ts doctor",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts"
   },
   "engines": {
     "node": ">=22"
   },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "agent-teams",
+    "sandbox",
+    "docker",
+    "tmux",
+    "agentic",
+    "cli",
+    "coding-agent",
+    "devcontainer"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Liohtml/agentbox.git"
+  },
+  "homepage": "https://github.com/Liohtml/agentbox#readme",
+  "bugs": {
+    "url": "https://github.com/Liohtml/agentbox/issues"
+  },
+  "author": "Liohtml",
+  "license": "MIT",
   "devDependencies": {
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
