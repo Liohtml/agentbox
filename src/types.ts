@@ -111,10 +111,11 @@ export interface DockerModule {
    */
   ensureHostMounts(config: AgentboxConfig): Promise<void>;
   /**
-   * Run a fresh container interactively (inherits stdio), with bind mounts,
-   * published observer port, and --memory/--cpus limits. Launches the entry
-   * script via `bash CONTAINER_ENTRY` (never relies on an execute bit).
-   * Resolves with the container's exit code when the user detaches/exits.
+   * Run a fresh container DETACHED (-d), with bind mounts, published observer
+   * port, and --memory/--cpus limits. Launches the entry script via
+   * `bash CONTAINER_ENTRY` (never relies on an execute bit) as container
+   * PID 1 — never a tmux attach client, so detaching a client cannot tear
+   * down the sandbox. Resolves with `docker run`'s exit code.
    */
   runContainer(config: AgentboxConfig, tty: TtySize): Promise<number>;
   /**
@@ -123,6 +124,11 @@ export interface DockerModule {
    * the exit code. `command` overrides the exec command (default: reattach tmux).
    */
   execAttach(config: AgentboxConfig, command?: string[]): Promise<number>;
+  /**
+   * Run a non-interactive command in the running container and report whether
+   * it exited 0 (used to poll tmux session readiness after `runContainer`).
+   */
+  execOk(containerName: string, command: string[]): Promise<boolean>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -132,14 +138,18 @@ export interface SessionModule {
   /** Read the real terminal size via `stty size`; falls back to DEFAULT_TTY. */
   readTtySize(): TtySize;
   /**
-   * Build the bash entry script (runs INSIDE the container). It must:
-   *   - reattach if the session already exists (tmux has-session)
-   *   - else create session sized to `tty` with two windows:
+   * Build the bash entry script (runs INSIDE the container as PID 1). It must:
+   *   - skip setup if the session already exists (tmux has-session)
+   *   - else create a DETACHED session sized to `tty` with two windows:
    *       window `main`     → Claude lead, CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
+   *                           + `--teammate-mode tmux` (split panes are no
+   *                           longer the upstream default since v2.1.179)
    *       window `observer` → `node CONTAINER_OBSERVER` (the dashboard)
    *   - bind `C-b t` to `select-layout main-vertical`
    *   - keep `observer` in its OWN window (never a pane in `main`)
-   *   - finally `exec tmux attach -t <session>`
+   *   - finally idle while the session exists (NEVER `exec tmux attach`: an
+   *     attach client as PID 1 means a detach kills the whole sandbox).
+   *     Clients attach via `docker exec` (attachCommand).
    */
   buildEntryScript(config: AgentboxConfig, tty: TtySize): string;
   /** Write buildEntryScript output to config.entryScriptPath; return that path. */

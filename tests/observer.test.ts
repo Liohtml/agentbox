@@ -42,3 +42,21 @@ test("reads the port from OBSERVER_PORT with a 4317 default", () => {
 test("exposes a /healthz endpoint", () => {
   assert.match(src, /["']\/healthz["']/);
 });
+
+test("HTML-escapes project and session names before innerHTML (stored-XSS guard)", () => {
+  // The client script must define an escaper and route both interpolated
+  // fields through it — project/session names are attacker-influencable
+  // filesystem names from inside the container.
+  assert.match(src, /const esc\s*=/);
+  assert.match(src, /esc\(s\.project\)/);
+  assert.match(src, /esc\(s\.session/);
+});
+
+test("handles server 'error' events instead of dying with an unhandled exception", () => {
+  assert.match(src, /server\.on\(\s*["']error["']/);
+  assert.match(src, /EADDRINUSE/);
+});
+
+test("falls back to the default port when OBSERVER_PORT is not a valid port", () => {
+  assert.match(src, /Number\.isInteger\(RAW_PORT\)/);
+});

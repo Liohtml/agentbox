@@ -150,8 +150,15 @@ export const docker: DockerModule = {
   },
 
   async removeContainer(name: string): Promise<void> {
-    // `rm -f` stops + removes. Ignore "no such container" (benign / idempotent).
-    await capture(["rm", "-f", name]);
+    // `rm -f` stops + removes. Ignore "no such container" (benign / idempotent),
+    // but surface every other failure — otherwise `down` reports success while
+    // the container still exists.
+    const { code, stderr } = await capture(["rm", "-f", name]);
+    if (code !== 0 && !/no such container/i.test(stderr)) {
+      throw new Error(
+        `docker rm -f ${name} failed (exit ${code})${stderr ? `: ${stderr.trim()}` : ""}`,
+      );
+    }
   },
 
   async ensureHostMounts(config: AgentboxConfig): Promise<void> {
@@ -160,28 +167,54 @@ export const docker: DockerModule = {
     fs.mkdirSync(config.claudeDir, { recursive: true });
 
     // claudeJson must be a FILE so Docker bind-mounts a file (not a dir).
-    // Edge case: a prior bad mount may have created it as a directory — leave
-    // that alone (can't safely rm), but ensure a file exists if nothing does.
-    let needsTouch = true;
+    let target: fs.Stats | undefined;
     try {
-      const st = fs.statSync(config.claudeJson);
-      if (st.isFile()) needsTouch = false;
-      // If it's a directory we cannot turn it into a file here; leave as-is.
-      else if (st.isDirectory()) needsTouch = false;
+      target = fs.lstatSync(config.claudeJson);
     } catch {
       // Does not exist yet → create it below.
     }
-    if (needsTouch) {
+
+    if (target?.isDirectory()) {
+      // A prior bad mount can leave a directory here; Docker would happily
+      // mount it and Claude Code would fail opaquely inside the container.
+      throw new Error(
+        `${config.claudeJson} is a directory, but Claude Code needs a file there.\n` +
+          `Remove it (rmdir '${config.claudeJson}') and run agentbox again.`,
+      );
+    }
+
+    if (target?.isSymbolicLink()) {
+      // Dotfile managers often symlink ~/.claude.json. Follow it: if the
+      // target exists we're done; if it dangles, create the target through
+      // the symlink (flag "w" — "wx" would fail with a confusing EEXIST on
+      // the link itself).
+      try {
+        fs.statSync(config.claudeJson);
+      } catch {
+        fs.writeFileSync(config.claudeJson, "{}\n", { flag: "w" });
+      }
+      return;
+    }
+
+    if (!target) {
       fs.mkdirSync(path.dirname(config.claudeJson), { recursive: true });
-      // Create an empty JSON object so Claude Code reads valid JSON.
-      fs.writeFileSync(config.claudeJson, "{}\n", { flag: "wx" });
+      // Create an empty JSON object so Claude Code reads valid JSON. "wx" +
+      // ignored EEXIST keeps a concurrent create benign.
+      try {
+        fs.writeFileSync(config.claudeJson, "{}\n", { flag: "wx" });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      }
     }
   },
 
   async runContainer(config: AgentboxConfig, tty: TtySize): Promise<number> {
+    // Detached (-d): the entry script — not a tmux attach client — is PID 1,
+    // so detaching a client can never tear the sandbox down. Attaching is a
+    // separate `docker exec` (execAttach).
     const args = [
       "run",
-      "-it",
+      "-d",
       "--rm",
       "--name",
       config.containerName,
@@ -222,9 +255,18 @@ export const docker: DockerModule = {
   },
 
   async execAttach(config: AgentboxConfig, command?: string[]): Promise<number> {
-    const cmd =
-      command ?? ["bash", "-lc", `tmux attach -t '${config.sessionName}'`];
+    const cmd = command ?? [
+      "bash",
+      "-lc",
+      // Same '\'' single-quote escaping the session module uses — keeps a
+      // future configurable session name injection-safe.
+      `tmux attach -t '${config.sessionName.replace(/'/g, `'\\''`)}'`,
+    ];
     const args = ["exec", "-it", config.containerName, ...cmd];
     return inherit(args);
+  },
+
+  async execOk(containerName: string, command: string[]): Promise<boolean> {
+    return ok(["exec", containerName, ...command]);
   },
 };

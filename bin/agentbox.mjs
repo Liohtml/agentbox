@@ -11,24 +11,25 @@ import { dirname, resolve } from "node:path";
 const here = dirname(fileURLToPath(import.meta.url));
 const entry = resolve(here, "..", "src", "index.ts");
 
-// Prefer the locally-installed tsx (node_modules/.bin) so a fresh clone works
-// after just `npm install`, with no global tsx required. Fall back to PATH.
+// Prefer the locally-installed tsx so a fresh clone (or the published
+// package, where tsx is a runtime dependency) works with no global tsx.
+// Invoke tsx's JS entry with the current node binary instead of the .bin
+// shim: no shell involved, so paths with spaces and cmd.exe metacharacters
+// can never break or inject (the .cmd shim needed shell:true on Windows).
 const isWin = process.platform === "win32";
-const localTsx = resolve(
-  here,
-  "..",
-  "node_modules",
-  ".bin",
-  isWin ? "tsx.cmd" : "tsx",
-);
-const useLocal = existsSync(localTsx);
-const tsxCmd = useLocal ? localTsx : "tsx";
+const localTsxCli = resolve(here, "..", "node_modules", "tsx", "dist", "cli.mjs");
+const useLocal = existsSync(localTsxCli);
 
-const child = spawn(tsxCmd, [entry, ...process.argv.slice(2)], {
-  stdio: "inherit",
-  env: process.env,
-  shell: isWin && useLocal, // a .cmd shim needs a shell on Windows
-});
+const child = useLocal
+  ? spawn(process.execPath, [localTsxCli, entry, ...process.argv.slice(2)], {
+      stdio: "inherit",
+      env: process.env,
+    })
+  : spawn("tsx", [entry, ...process.argv.slice(2)], {
+      stdio: "inherit",
+      env: process.env,
+      shell: isWin, // PATH fallback: a global tsx is a .cmd shim on Windows
+    });
 
 child.on("error", (err) => {
   if (err && err.code === "ENOENT") {

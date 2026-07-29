@@ -18,8 +18,11 @@ agentbox is a **workbench, not a jail**. By design:
 - Your host `~/.claude` directory and `~/.claude.json` are bind-mounted
   **read-write** into the container. They contain your OAuth token, the list
   of project paths you've opened, and full session transcripts. Anything
-  running inside the box can read or modify them. Only run workloads you
-  trust.
+  running inside the box can read or modify them — including
+  `~/.claude/settings.json` and hooks, which your **host** Claude Code
+  executes. In other words, for untrusted workloads this mount is a
+  container-to-host escape channel. Only run workloads you trust.
+  (Narrowing the mount to just credentials is on the roadmap.)
 - The container isolates *resources* (CPU/memory caps, `--rm`, non-root
   `agent` user) — it is **not** a security boundary against malicious code.
 - The Observer dashboard is unauthenticated by design; its port is published

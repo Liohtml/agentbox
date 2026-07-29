@@ -46,6 +46,11 @@ test("enables CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 in the main window", () => 
   assert.match(s, /send-keys -t "\$SESSION":main .*claude/);
 });
 
+test("launches the lead with --teammate-mode tmux (split panes are no longer the upstream default)", () => {
+  const s = session.buildEntryScript(baseConfig(), TTY);
+  assert.match(s, /claude --teammate-mode tmux/);
+});
+
 test("creates the observer in its OWN window (not a pane in main)", () => {
   const s = session.buildEntryScript(baseConfig(), TTY);
   // A dedicated `new-window -n observer` — never `split-window`.
@@ -75,10 +80,21 @@ test("binds C-b t to select-layout main-vertical", () => {
   assert.match(s, /tmux bind-key -T prefix t select-layout main-vertical/);
 });
 
-test("reattaches if the session already exists", () => {
+test("skips setup when the session already exists (idempotent re-run)", () => {
   const s = session.buildEntryScript(baseConfig(), TTY);
-  assert.match(s, /tmux has-session -t "\$SESSION"/);
-  assert.match(s, /exec tmux attach -t "\$SESSION"/);
+  assert.match(s, /if ! tmux has-session -t "\$SESSION"/);
+});
+
+test("PID 1 idles while the session lives — NEVER 'exec tmux attach' (a detach would kill the sandbox)", () => {
+  const s = session.buildEntryScript(baseConfig(), TTY);
+  assert.doesNotMatch(s, /exec tmux attach/);
+  // Keep-alive loop bound to the tmux session's lifetime.
+  assert.match(s, /while tmux has-session -t "\$SESSION"/);
+});
+
+test("observer window keeps its output readable after a crash (remain-on-exit)", () => {
+  const s = session.buildEntryScript(baseConfig(), TTY);
+  assert.match(s, /set-option -w -t "\$SESSION":observer remain-on-exit on/);
 });
 
 test("uses a bash shebang and strict mode", () => {

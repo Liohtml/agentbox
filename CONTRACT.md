@@ -66,7 +66,9 @@ Defaults (`DEFAULTS` in types):
 - `claudeDir` default = `~/.claude`, `claudeJson` default = `~/.claude.json`
 - `dockerfile` = `assets/Dockerfile`, `buildContext` = `assets/`
 - `observerAsset` = `assets/observer.mjs`
-- `entryScriptPath` = a host temp path (e.g. `os.tmpdir()/agentbox-entry.sh`)
+- `entryScriptPath` = a host temp path in a per-user 0700 subdir
+  (`os.tmpdir()/agentbox-<uid>/entry.sh`) — never a fixed path in the shared
+  temp dir (tamper/TOCTOU on multi-user hosts)
 
 ---
 
@@ -117,8 +119,16 @@ export const session: SessionModule; // see src/types.ts
    `main`.
 4. **Launch the entry script via `bash /agentbox/entry.sh`** so a missing
    execute bit never blocks startup.
-5. Set `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in the `main` window.
+5. Set `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in the `main` window, and
+   launch the lead with `--teammate-mode tmux`: since Claude Code v2.1.179
+   the default teammateMode is `in-process`, which silently disables the
+   split-pane layout.
 6. Read the real TTY size via `stty size` so tmux isn't stuck at 80×24.
+7. **The tmux attach client must NEVER be container PID 1.** The container
+   runs detached (`docker run -d`); the entry script sets the session up and
+   idles while it exists, and clients attach via `docker exec … tmux attach`.
+   Otherwise `C-b d` (detach) exits PID 1, kills every agent, and `--rm`
+   deletes the container.
 
 ---
 

@@ -34,8 +34,11 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && node --version && npm --version
 
 # ── Global npm tools: Claude Code + tsx ───────────────────────────────────────
-# Pinned to global prefix; no auth baked in.
-RUN npm install -g @anthropic-ai/claude-code tsx \
+# No auth baked in. Versions overridable for reproducible builds:
+#   docker build --build-arg CLAUDE_CODE_VERSION=2.1.180 --build-arg TSX_VERSION=4.19.2 …
+ARG CLAUDE_CODE_VERSION=latest
+ARG TSX_VERSION=latest
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "tsx@${TSX_VERSION}" \
     && npm cache clean --force
 
 # ── Non-root user `agent` ─────────────────────────────────────────────────────
