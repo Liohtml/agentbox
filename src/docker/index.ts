@@ -16,10 +16,13 @@ import {
   type AgentboxConfig,
   type DockerModule,
   type TtySize,
+  CACHE_VOLUMES,
   CONTAINER_WORKSPACE,
   CONTAINER_CLAUDE_DIR,
   CONTAINER_CLAUDE_JSON,
   CONTAINER_ENTRY,
+  CONTAINER_GH_CONFIG,
+  CONTAINER_GITCONFIG,
   CONTAINER_OBSERVER,
 } from "../types.ts";
 
@@ -87,6 +90,98 @@ function inherit(args: string[]): Promise<number> {
 async function ok(args: string[]): Promise<boolean> {
   const { code } = await capture(args);
   return code === 0;
+}
+
+function isFile(p: string): boolean {
+  try {
+    return fs.statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function isDir(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Build the full `docker run` argv. Exported (and pure — host-fs facts are
+ * injected via `present`) so tests can assert the exact argv without Docker.
+ *
+ * Detached (-d): the entry script — not a tmux attach client — is PID 1, so
+ * detaching a client can never tear the sandbox down. Attaching is a separate
+ * `docker exec` (execAttach).
+ */
+export function buildRunArgs(
+  config: AgentboxConfig,
+  tty: TtySize,
+  present: { gitconfig: boolean; ghConfig: boolean },
+): string[] {
+  const args = [
+    "run",
+    "-d",
+    "--rm",
+    "--name",
+    config.containerName,
+    // ── bind mounts ──────────────────────────────────────────────────────
+    "-v",
+    `${config.workspace}:${CONTAINER_WORKSPACE}`,
+    "-v",
+    `${config.claudeDir}:${CONTAINER_CLAUDE_DIR}`,
+    "-v",
+    `${config.claudeJson}:${CONTAINER_CLAUDE_JSON}`,
+    "-v",
+    `${config.entryScriptPath}:${CONTAINER_ENTRY}`,
+    "-v",
+    `${config.observerAsset}:${CONTAINER_OBSERVER}`,
+  ];
+
+  // ── host identity, read-only, only when present (git commits + gh auth) ──
+  if (present.gitconfig) {
+    args.push("-v", `${config.gitconfigPath}:${CONTAINER_GITCONFIG}:ro`);
+  }
+  if (present.ghConfig) {
+    args.push("-v", `${config.ghConfigDir}:${CONTAINER_GH_CONFIG}:ro`);
+  }
+
+  // ── persistent tool caches (named volumes; the box itself stays --rm) ───
+  for (const [volume, target] of CACHE_VOLUMES) {
+    args.push("-v", `${volume}:${target}`);
+  }
+
+  args.push(
+    // ── published observer port (loopback only — never expose to the LAN) ─
+    "-p",
+    `127.0.0.1:${config.observerPort}:${config.observerPort}`,
+    // ── resource limits ─────────────────────────────────────────────────
+    "--memory",
+    config.memory,
+    "--cpus",
+    config.cpus,
+  );
+
+  if (config.gpus) {
+    args.push("--gpus", config.gpus);
+  }
+
+  args.push(
+    // ── env ─────────────────────────────────────────────────────────────
+    "-e",
+    `OBSERVER_PORT=${config.observerPort}`,
+    "-e",
+    `COLUMNS=${tty.cols}`,
+    "-e",
+    `LINES=${tty.rows}`,
+    config.image,
+    // Launch via bash so a missing execute bit never blocks startup.
+    "bash",
+    CONTAINER_ENTRY,
+  );
+  return args;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -209,48 +304,10 @@ export const docker: DockerModule = {
   },
 
   async runContainer(config: AgentboxConfig, tty: TtySize): Promise<number> {
-    // Detached (-d): the entry script — not a tmux attach client — is PID 1,
-    // so detaching a client can never tear the sandbox down. Attaching is a
-    // separate `docker exec` (execAttach).
-    const args = [
-      "run",
-      "-d",
-      "--rm",
-      "--name",
-      config.containerName,
-      // ── bind mounts ──────────────────────────────────────────────────────
-      "-v",
-      `${config.workspace}:${CONTAINER_WORKSPACE}`,
-      "-v",
-      `${config.claudeDir}:${CONTAINER_CLAUDE_DIR}`,
-      "-v",
-      `${config.claudeJson}:${CONTAINER_CLAUDE_JSON}`,
-      "-v",
-      `${config.entryScriptPath}:${CONTAINER_ENTRY}`,
-      "-v",
-      `${config.observerAsset}:${CONTAINER_OBSERVER}`,
-      // ── published observer port (loopback only — never expose to the LAN) ─
-      "-p",
-      `127.0.0.1:${config.observerPort}:${config.observerPort}`,
-      // ── resource limits ─────────────────────────────────────────────────
-      "--memory",
-      config.memory,
-      "--cpus",
-      config.cpus,
-      // ── env ─────────────────────────────────────────────────────────────
-      "-e",
-      `OBSERVER_PORT=${config.observerPort}`,
-      "-e",
-      `COLUMNS=${tty.cols}`,
-      "-e",
-      `LINES=${tty.rows}`,
-    ];
-    args.push(
-      config.image,
-      // Launch via bash so a missing execute bit never blocks startup.
-      "bash",
-      CONTAINER_ENTRY,
-    );
+    const args = buildRunArgs(config, tty, {
+      gitconfig: isFile(config.gitconfigPath),
+      ghConfig: isDir(config.ghConfigDir),
+    });
     return inherit(args);
   },
 
@@ -268,5 +325,17 @@ export const docker: DockerModule = {
 
   async execOk(containerName: string, command: string[]): Promise<boolean> {
     return ok(["exec", containerName, ...command]);
+  },
+
+  async imageArchitecture(image: string): Promise<string | undefined> {
+    const { code, stdout } = await capture([
+      "image",
+      "inspect",
+      "--format",
+      "{{.Architecture}}",
+      image,
+    ]);
+    const arch = stdout.trim();
+    return code === 0 && arch.length > 0 ? arch : undefined;
   },
 };

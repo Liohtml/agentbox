@@ -101,6 +101,13 @@ export const session: SessionModule; // see src/types.ts
 | `config.claudeJson` (`~/.claude.json`) | `/home/agent/.claude.json` | **touch first** so Docker mounts a file, not a dir |
 | `config.entryScriptPath`   | `/agentbox/entry.sh`         | run via `bash` (no execute-bit reliance) |
 | `config.observerAsset`     | `/agentbox/observer.mjs`     | the dashboard                          |
+| `config.gitconfigPath` *(if present)* | `/home/agent/.gitconfig` | **read-only** — git identity reuse |
+| `config.ghConfigDir` *(if present)*   | `/home/agent/.config/gh` | **read-only** — gh CLI auth reuse  |
+
+Named cache volumes (`CACHE_VOLUMES` in types.ts): `agentbox-npm-cache`,
+`agentbox-cargo-registry`, `agentbox-pip-cache` → the box stays `--rm`,
+only tool downloads persist. Host identity mounts are read-only, existence-
+gated, and NEVER copied into the image.
 
 - Publish `-p <observerPort>:<observerPort>`.
 - Apply `--memory <config.memory>` and `--cpus <config.cpus>`.

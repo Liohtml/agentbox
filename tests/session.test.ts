@@ -24,6 +24,9 @@ function baseConfig(over: Partial<AgentboxConfig> = {}): AgentboxConfig {
     observerPort: 4317,
     memory: "4g",
     cpus: "4",
+    yolo: false,
+    gitconfigPath: "/home/u/.gitconfig",
+    ghConfigDir: "/home/u/.config/gh",
     dockerfile: "/repo/assets/Dockerfile",
     buildContext: "/repo/assets",
     observerAsset: "/repo/assets/observer.mjs",
@@ -49,6 +52,13 @@ test("enables CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 in the main window", () => 
 test("launches the lead with --teammate-mode tmux (split panes are no longer the upstream default)", () => {
   const s = session.buildEntryScript(baseConfig(), TTY);
   assert.match(s, /claude --teammate-mode tmux/);
+});
+
+test("--yolo adds --dangerously-skip-permissions to the lead; default does not", () => {
+  const on = session.buildEntryScript(baseConfig({ yolo: true }), TTY);
+  assert.match(on, /--dangerously-skip-permissions/);
+  const off = session.buildEntryScript(baseConfig(), TTY);
+  assert.doesNotMatch(off, /--dangerously-skip-permissions/);
 });
 
 test("creates the observer in its OWN window (not a pane in main)", () => {

@@ -96,6 +96,8 @@ Run `agentbox help <command>` for details on any command.
 | `--cpus <val>`      | Docker `--cpus` limit, e.g. `4`.                      | `CPUS`           |
 | `--port <n>`        | Observer web port (default `4317`).                   | —                |
 | `--network <mode>`  | `docker build --network` mode, e.g. `host`.           | `DOCKER_NETWORK` |
+| `--gpus <val>`      | `docker run --gpus` passthrough, e.g. `all` (Linux/NVIDIA). | —           |
+| `--yolo`            | Lead runs with `--dangerously-skip-permissions`; teammates inherit it. Opt-in — only for workloads you trust. | — |
 | `--no-cache`        | Force a clean image build (`up` / `rebuild`).         | —                |
 
 ### Env overrides
@@ -133,6 +135,14 @@ WORKSPACE=~/code/myapp MEM=8g CPUS=6 agentbox up --port 5000
 | `~/.claude.json`      | `/home/agent/.claude.json` | Claude config file (touched first so Docker mounts a file)     |
 | generated `entry.sh`  | `/agentbox/entry.sh`       | the tmux bootstrap, run via `bash`                            |
 | `assets/observer.mjs` | `/agentbox/observer.mjs`   | the Observer dashboard                                         |
+| `~/.gitconfig` *(if present)* | `/home/agent/.gitconfig` **(read-only)** | git identity — agents can commit as you |
+| `~/.config/gh` *(if present)* | `/home/agent/.config/gh` **(read-only)** | `gh` CLI auth — agents can open PRs      |
+
+Additionally, three **named Docker volumes** persist tool caches across boxes
+(`agentbox-npm-cache` → `~/.npm`, `agentbox-cargo-registry` → `~/.cargo/registry`,
+`agentbox-pip-cache` → `~/.cache/pip`). The box itself stays disposable
+(`--rm`); only downloaded packages survive, so fresh boxes skip the
+cold-start tax. Remove them any time with `docker volume rm`.
 
 ### The tmux layout
 
@@ -165,6 +175,7 @@ agentbox isolates **resources** (CPU/memory caps, a throwaway `--rm` container, 
 
 - **Your host Claude credentials are mounted read-write.** `~/.claude` and `~/.claude.json` carry your OAuth token, the list of every project path you've opened, and full session transcripts under `~/.claude/projects`. Anything running inside the box can read or modify them. That includes `~/.claude/settings.json` and hooks — code in the box could plant a hook that your **host** Claude Code executes later, i.e. the mount is a container-to-host escape channel for untrusted workloads. Only run workloads you trust. (Narrowing this mount to just credentials is on the [roadmap](ROADMAP.md).)
 - **The container is a workbench, not a jail.** Treat it as a clean, disposable, resource-capped place for *your own* agentic workflows — not as a barrier against malicious code. (The Observer is published to `127.0.0.1` only, so its unauthenticated dashboard never leaks to the LAN.)
+- **`--yolo` removes the last human checkpoint.** With it, the lead (and every teammate) runs `--dangerously-skip-permissions` — no permission prompts inside the box. That's exactly what a disposable container is for, but combined with the mounted credentials and read-only `gh` auth it means agents can do anything *you* can. Opt-in per invocation; never the default.
 
 ---
 

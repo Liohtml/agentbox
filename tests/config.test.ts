@@ -81,6 +81,20 @@ test("buildNetwork: flag > env, unset → undefined", () => {
   );
 });
 
+test("yolo is opt-in only (boolean flag), gpus passes through", () => {
+  assert.equal(resolveConfig(emptyEnv(), {}).yolo, false);
+  assert.equal(resolveConfig(emptyEnv(), { yolo: true }).yolo, true);
+  assert.equal(resolveConfig(emptyEnv(), {}).gpus, undefined);
+  assert.equal(resolveConfig(emptyEnv(), { gpus: "all" }).gpus, "all");
+});
+
+test("git identity / gh auth candidate paths default under home", () => {
+  const home = os.homedir();
+  const c = resolveConfig(emptyEnv(), {});
+  assert.equal(c.gitconfigPath, path.join(home, ".gitconfig"));
+  assert.equal(c.ghConfigDir, path.join(home, ".config", "gh"));
+});
+
 test("claude paths default under the home directory", () => {
   const home = os.homedir();
   const c = resolveConfig(emptyEnv(), {});

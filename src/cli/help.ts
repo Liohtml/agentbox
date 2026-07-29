@@ -26,6 +26,10 @@ FLAGS
       --cpus <val>      Docker --cpus limit, e.g. 4             (env: CPUS)
       --port <n>        Observer web port (default 4317)
       --network <mode>  docker build --network (e.g. host)     (env: DOCKER_NETWORK)
+      --gpus <val>      docker run --gpus passthrough (e.g. all, device=0)
+      --yolo            Lead runs with --dangerously-skip-permissions
+                        (teammates inherit it). Opt-in; use only for
+                        workloads you trust.
       --no-cache        Force a clean image build (up / rebuild).
 
 ENV OVERRIDES (precedence: flag > env > default)
@@ -45,14 +49,18 @@ const PER_COMMAND: Record<string, string> = {
 
 USAGE
   agentbox up [--workspace <dir>] [--memory <val>] [--cpus <val>]
-              [--port <n>] [--network <mode>] [--no-cache]
+              [--port <n>] [--network <mode>] [--gpus <val>] [--yolo]
+              [--no-cache]
 
 Builds the image if it is missing, ensures the host mount sources exist,
-writes the tmux entry script, and runs the container interactively. If the
-container is already running, it reattaches to the existing tmux session
-instead of starting a second one. Pass --no-cache to force a clean rebuild.
-Pass --network host if the build can't reach the internet on the default
-bridge (runs build steps in the host network namespace).`,
+writes the tmux entry script, starts the container detached, and attaches
+your terminal to its tmux session. Detaching (Ctrl+b d) leaves the box
+running; if the container is already running, 'up' just reattaches. Your
+~/.gitconfig and ~/.config/gh are mounted read-only when present so agents
+can commit and use gh. npm/cargo/pip caches persist in named volumes.
+Pass --no-cache to force a clean rebuild, --network host if the build can't
+reach the internet on the default bridge, --yolo to let the lead (and its
+teammates) skip permission prompts — only for workloads you trust.`,
 
   shell: `agentbox shell — open a bash shell in the running box
 

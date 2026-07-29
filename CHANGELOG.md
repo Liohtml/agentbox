@@ -52,8 +52,21 @@ adheres to [Semantic Versioning](https://semver.org/).
   tarball and runs the CLI as an end user would.
 
 ### Added
+- **`--yolo` flag**: the Claude lead runs with
+  `--dangerously-skip-permissions` (teammates inherit it). Opt-in per
+  invocation, never the default — see README → Security & trust.
+- **Persistent tool-cache volumes**: named Docker volumes for `~/.npm`,
+  `~/.cargo/registry` and pip's cache. Boxes stay `--rm`-disposable; only
+  downloaded packages survive.
+- **Git identity + `gh` auth forwarding**: `~/.gitconfig` and `~/.config/gh`
+  are bind-mounted read-only when present, and the `gh` CLI is installed in
+  the image — agents can commit and open PRs as you, without any credential
+  ever entering the image.
+- **`--gpus` passthrough** to `docker run --gpus` (e.g. `all`, `device=0`).
+- `doctor` warns when the local image architecture doesn't match the host
+  (emulated images are painfully slow under qemu).
 - `SECURITY.md`, `CODE_OF_CONDUCT.md`, PR template, issue-template config,
-  Dependabot config, `RELEASING.md`, this changelog.
+  Dependabot config, `RELEASING.md`, `ROADMAP.md`, this changelog.
 - Tag-triggered release workflow with npm provenance.
 
 ### Removed

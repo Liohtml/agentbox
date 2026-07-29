@@ -28,6 +28,20 @@ export const CONTAINER_CLAUDE_JSON = "/home/agent/.claude.json";
 export const CONTAINER_ENTRY = "/agentbox/entry.sh";
 /** Observer server (bundled asset) bind-mounted to this path. */
 export const CONTAINER_OBSERVER = "/agentbox/observer.mjs";
+/** Host git identity, mounted read-only (only when present on the host). */
+export const CONTAINER_GITCONFIG = "/home/agent/.gitconfig";
+/** Host gh CLI auth, mounted read-only (only when present on the host). */
+export const CONTAINER_GH_CONFIG = "/home/agent/.config/gh";
+
+/**
+ * Named Docker volumes for tool caches: the box stays --rm-disposable, but
+ * npm/cargo/pip downloads survive between boxes (kills the cold-start tax).
+ */
+export const CACHE_VOLUMES: ReadonlyArray<readonly [volume: string, target: string]> = [
+  ["agentbox-npm-cache", "/home/agent/.npm"],
+  ["agentbox-cargo-registry", "/home/agent/.cargo/registry"],
+  ["agentbox-pip-cache", "/home/agent/.cache/pip"],
+];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Config schema. Built by cli.resolveConfig() from env + flags + defaults.
@@ -58,6 +72,24 @@ export interface AgentboxConfig {
    * Unset → Docker's default build network. env: DOCKER_NETWORK / flag: --network.
    */
   buildNetwork?: string;
+  /**
+   * Launch the Claude lead with --dangerously-skip-permissions (teammates
+   * inherit it). Opt-in via --yolo — the disposable, resource-capped box is
+   * the environment that flag exists for, but it stays off by default.
+   */
+  yolo: boolean;
+  /** Optional `docker run --gpus` value (e.g. "all", "device=0"). flag: --gpus. */
+  gpus?: string;
+  /**
+   * Host ~/.gitconfig candidate path. Mounted READ-ONLY into the container
+   * (git identity reuse) only if it exists at run time.
+   */
+  gitconfigPath: string;
+  /**
+   * Host ~/.config/gh candidate dir. Mounted READ-ONLY into the container
+   * (gh CLI auth reuse) only if it exists at run time.
+   */
+  ghConfigDir: string;
   /** Path to the Dockerfile (assets/Dockerfile). */
   dockerfile: string;
   /** Build context dir for `docker build` (the assets dir). */
@@ -129,6 +161,12 @@ export interface DockerModule {
    * it exited 0 (used to poll tmux session readiness after `runContainer`).
    */
   execOk(containerName: string, command: string[]): Promise<boolean>;
+  /**
+   * The local image's Architecture (e.g. "amd64", "arm64"), or undefined if
+   * the image is missing / docker is unavailable. Used by doctor to warn
+   * about emulated (slow) image/host arch mismatches.
+   */
+  imageArchitecture(image: string): Promise<string | undefined>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -27,6 +27,8 @@ const KNOWN_FLAGS = new Set([
   "cpus",
   "port",
   "network",
+  "gpus",
+  "yolo",
   "no-cache",
   "help",
   "h",
@@ -103,9 +105,16 @@ export async function run(argv: string[]): Promise<number> {
 
   // Reattaching ignores per-invocation flags (the box is shared); make that
   // visible instead of silent.
-  const tuningFlagsGiven = ["workspace", "port", "memory", "cpus"].some(
-    (f) => typeof parsed.flags[f] === "string",
-  );
+  const tuningFlagsGiven =
+    ["workspace", "port", "memory", "cpus", "gpus"].some(
+      (f) => typeof parsed.flags[f] === "string",
+    ) || parsed.flags.yolo === true;
+
+  if (config.yolo && (parsed.command === "up" || parsed.command === "rebuild")) {
+    console.error(
+      "agentbox: --yolo — the Claude lead (and its teammates) will skip ALL permission prompts inside the box.",
+    );
+  }
 
   try {
     switch (parsed.command) {
@@ -270,6 +279,22 @@ async function cmdDoctor(config: AgentboxConfig): Promise<number> {
     line(imageOk, `Image '${config.image}' exists${imageOk ? "" : "  (run: agentbox up)"}`);
   } else {
     line(false, `Image '${config.image}' — skipped (Docker unavailable)`);
+  }
+
+  // Image/host architecture match — an emulated image (e.g. amd64 on Apple
+  // Silicon) works but is painfully slow under qemu. Soft warning.
+  if (imageOk) {
+    const imgArch = await safe(() => docker.imageArchitecture(config.image), undefined);
+    const hostArch = ({ x64: "amd64", arm64: "arm64" } as Record<string, string>)[
+      process.arch
+    ] ?? process.arch;
+    if (imgArch) {
+      line(
+        imgArch === hostArch,
+        `Image arch matches host: image ${imgArch}, host ${hostArch}` +
+          (imgArch === hostArch ? "" : "  (emulated — expect slow agents; rebuild on this machine)"),
+      );
+    }
   }
 
   // Host mount sources.

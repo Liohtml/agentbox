@@ -80,9 +80,11 @@ function buildEntryScript(config: AgentboxConfig, tty: TtySize): string {
   // `--teammate-mode tmux` is required for teammates to appear as split
   // panes: since Claude Code v2.1.179 the default teammateMode is
   // "in-process", which silently disables the split-pane layout agentbox is
-  // built around.
+  // built around. --yolo opts into skipping permission prompts (teammates
+  // inherit the lead's permission mode).
   const leadCmd =
-    "export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1; claude --teammate-mode tmux";
+    "export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1; claude --teammate-mode tmux" +
+    (config.yolo ? " --dangerously-skip-permissions" : "");
   // Command run in the `observer` window: the dashboard web server.
   const observerCmd = `OBSERVER_PORT=${observerPort} node ${shSingleQuote(
     CONTAINER_OBSERVER,

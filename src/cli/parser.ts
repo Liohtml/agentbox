@@ -8,7 +8,7 @@
  */
 
 /** Long-form flags that consume a following value. */
-const VALUE_FLAGS = new Set(["workspace", "memory", "cpus", "port", "network"]);
+const VALUE_FLAGS = new Set(["workspace", "memory", "cpus", "port", "network", "gpus"]);
 
 export interface ParsedArgs {
   /** First positional, or "up" when none is supplied. */

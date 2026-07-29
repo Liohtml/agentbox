@@ -46,6 +46,10 @@ export function resolveConfig(
   // Optional build network (e.g. "host"). Unset → Docker's default.
   const buildNetwork = str(flags.network) ?? env.DOCKER_NETWORK ?? undefined;
 
+  // Opt-in only — never default a permission bypass on.
+  const yolo = flags.yolo === true;
+  const gpus = str(flags.gpus);
+
   return {
     workspace: path.resolve(workspace),
     claudeDir: path.join(home, ".claude"),
@@ -57,6 +61,10 @@ export function resolveConfig(
     memory,
     cpus,
     buildNetwork,
+    yolo,
+    gpus,
+    gitconfigPath: path.join(home, ".gitconfig"),
+    ghConfigDir: path.join(home, ".config", "gh"),
     dockerfile: path.join(REPO_ROOT, "assets", "Dockerfile"),
     buildContext: path.join(REPO_ROOT, "assets"),
     observerAsset: path.join(REPO_ROOT, "assets", "observer.mjs"),
