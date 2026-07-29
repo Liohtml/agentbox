@@ -1,5 +1,9 @@
 # agentbox
 
+[![CI](https://github.com/Liohtml/agentbox/actions/workflows/ci.yml/badge.svg)](https://github.com/Liohtml/agentbox/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Node >= 22](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](package.json)
+
 > One command spins up a Docker-isolated agentic coding sandbox — tmux + Claude Code (Agent Teams) + a live web Observer.
 
 `agentbox up` boots a disposable Ubuntu container preloaded with Node 22, Python 3, Rust, and Claude Code, bind-mounts your project **and your host Claude login** into it, and drops you into a tmux session: the Claude **lead** runs on the left, its **teammates** spawn on the right, and a live **Observer** dashboard runs in its own window — reachable from your host browser at <http://localhost:4317>.
@@ -60,8 +64,13 @@ agentbox            # 'up' is the default command — runs in the current dir
 You can also invoke it without linking via `npx`:
 
 ```bash
-npx agentbox up          # from within the cloned repo
+npx . up                 # from within the cloned repo
 ```
+
+> Note: the package name on npm is **`@liohtml/agentbox`** (the bare name
+> `agentbox` on the registry is an unrelated npm security placeholder — don't
+> `npx agentbox` outside the cloned repo). Once published, use
+> `npx @liohtml/agentbox up`; the installed command is still `agentbox`.
 
 ---
 
