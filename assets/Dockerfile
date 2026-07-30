@@ -43,10 +43,11 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && gh --version
 
 # ── Global npm tools: Claude Code + tsx ───────────────────────────────────────
-# No auth baked in. Versions overridable for reproducible builds:
-#   docker build --build-arg CLAUDE_CODE_VERSION=2.1.180 --build-arg TSX_VERSION=4.19.2 …
-ARG CLAUDE_CODE_VERSION=latest
-ARG TSX_VERSION=latest
+# No auth baked in. Pinned defaults for reproducible builds; override for an
+# intentional upgrade:
+#   docker build --build-arg CLAUDE_CODE_VERSION=2.1.221 --build-arg TSX_VERSION=4.24.0 …
+ARG CLAUDE_CODE_VERSION=2.1.220
+ARG TSX_VERSION=4.23.1
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "tsx@${TSX_VERSION}" \
     && npm cache clean --force
 

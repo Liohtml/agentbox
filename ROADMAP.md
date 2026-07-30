@@ -14,7 +14,8 @@ anything marked M/L effort.
 2. ✅ **`--yolo` flag** — opt-in `--dangerously-skip-permissions` for the
    lead (teammates inherit it). Off by default; see README → Security.
 3. ✅ **Persistent tool-cache volumes** — named volumes for `~/.npm`,
-   `~/.cargo/registry`, and pip's cache. The box stays `--rm`-disposable.
+   `~/.cargo/registry`, and pip's cache. The box itself stays disposable
+   (`down` / `up`'s stale-container cleanup).
 4. ✅ **Git identity + `gh` auth forwarding** — `~/.gitconfig` and
    `~/.config/gh` are mounted read-only when present; `gh` is installed in
    the image. Borrow host identity, never store it.

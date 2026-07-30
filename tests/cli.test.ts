@@ -77,3 +77,38 @@ test("an explicitly requested workspace that does not exist is rejected", async 
   assert.equal(code, 1);
   assert.match(err, /workspace directory does not exist/);
 });
+
+test("a value flag with no value (e.g. --gpus) is a hard error, not silently disabled", async () => {
+  const { code, err } = await runCapture(["up", "--gpus"]);
+  assert.equal(code, 1);
+  assert.match(err, /--gpus/);
+  assert.match(err, /require a value/);
+});
+
+test("down stays usable even when MEM/CPUS are currently invalid (validateConfig is scoped to up/rebuild)", async () => {
+  const prevMem = process.env.MEM;
+  process.env.MEM = "not-a-valid-memory-value";
+  try {
+    const { err } = await runCapture(["down"]);
+    // Whatever docker.available() resolves to in this environment, `down`
+    // must never be blocked by a --memory-shaped validation error.
+    assert.doesNotMatch(err, /--memory/);
+  } finally {
+    if (prevMem === undefined) delete process.env.MEM;
+    else process.env.MEM = prevMem;
+  }
+});
+
+test("doctor reports an invalid config value in its checklist instead of hard-failing before it can run", async () => {
+  const prevMem = process.env.MEM;
+  process.env.MEM = "not-a-valid-memory-value";
+  try {
+    const { code, out, err } = await runCapture(["doctor"]);
+    assert.match(out, /--memory/);
+    assert.match(err, /doctor found a hard failure/);
+    assert.equal(code, 1);
+  } finally {
+    if (prevMem === undefined) delete process.env.MEM;
+    else process.env.MEM = prevMem;
+  }
+});

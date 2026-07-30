@@ -33,9 +33,13 @@ export const CONTAINER_GITCONFIG = "/home/agent/.gitconfig";
 /** Host gh CLI auth, mounted read-only (only when present on the host). */
 export const CONTAINER_GH_CONFIG = "/home/agent/.config/gh";
 
+/** Container label recording whether the box was started with --yolo. */
+export const LABEL_YOLO = "agentbox.yolo";
+
 /**
- * Named Docker volumes for tool caches: the box stays --rm-disposable, but
- * npm/cargo/pip downloads survive between boxes (kills the cold-start tax).
+ * Named Docker volumes for tool caches: npm/cargo/pip downloads survive
+ * between boxes even though the container itself is not auto-removed on
+ * exit (see DockerModule.runContainer).
  */
 export const CACHE_VOLUMES: ReadonlyArray<readonly [volume: string, target: string]> = [
   ["agentbox-npm-cache", "/home/agent/.npm"],
@@ -147,7 +151,10 @@ export interface DockerModule {
    * port, and --memory/--cpus limits. Launches the entry script via
    * `bash CONTAINER_ENTRY` (never relies on an execute bit) as container
    * PID 1 — never a tmux attach client, so detaching a client cannot tear
-   * down the sandbox. Resolves with `docker run`'s exit code.
+   * down the sandbox. Deliberately NOT --rm: a container that exits early
+   * (entry script crash) stays inspectable via `docker logs`; `up` removes
+   * a stale stopped container before starting a fresh one, and `down`
+   * removes it explicitly. Resolves with `docker run`'s exit code.
    */
   runContainer(config: AgentboxConfig, tty: TtySize): Promise<number>;
   /**
@@ -167,6 +174,13 @@ export interface DockerModule {
    * about emulated (slow) image/host arch mismatches.
    */
   imageArchitecture(image: string): Promise<string | undefined>;
+  /**
+   * Labels of a container (e.g. LABEL_YOLO), or {} if the container is
+   * missing / docker is unavailable. Used on reattach to report the
+   * RUNNING container's actual startup mode instead of the current
+   * invocation's flags, which are ignored on reattach.
+   */
+  containerLabels(name: string): Promise<Record<string, string>>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

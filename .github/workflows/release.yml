@@ -9,31 +9,65 @@ permissions:
 
 jobs:
   checks:
-    name: typecheck & test
+    name: typecheck, test & tag/version match
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
 
+      - name: Tag must match package.json version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag v$tag does not match package.json version $pkg — refusing to publish a mismatched release."
+            exit 1
+          fi
+
+  pack-smoke:
+    name: npm pack smoke test
+    needs: checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+
+      - name: Pack tarball and run it as an end user would
+        run: |
+          npm pack --pack-destination "$RUNNER_TEMP"
+          mkdir -p "$RUNNER_TEMP/consumer"
+          cd "$RUNNER_TEMP/consumer"
+          npm init -y >/dev/null
+          npm install "$RUNNER_TEMP"/liohtml-agentbox-*.tgz
+          npx agentbox --help
+          npx agentbox doctor 2>&1 | grep -q "agentbox doctor"
+
   publish:
     name: npm publish (provenance)
-    needs: checks
+    needs: pack-smoke
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
           registry-url: "https://registry.npmjs.org"
       - run: npm ci
       - run: npm publish --provenance --access public

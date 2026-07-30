@@ -57,6 +57,32 @@ test("handles server 'error' events instead of dying with an unhandled exception
   assert.match(src, /EADDRINUSE/);
 });
 
-test("falls back to the default port when OBSERVER_PORT is not a valid port", () => {
-  assert.match(src, /Number\.isInteger\(RAW_PORT\)/);
+/**
+ * Actually EXECUTE the two-line RAW_PORT/PORT derivation extracted from the
+ * real source (not a reimplementation) for a given raw OBSERVER_PORT value,
+ * without starting the HTTP server. This exercises the real bounds logic —
+ * a single "does it mention Number.isInteger" regex wouldn't catch a broken
+ * `> 0` or `<= 65535` bound, or a broken 4317 fallback.
+ */
+function resolvePort(rawEnvValue: string | undefined): number {
+  const match = src.match(/const RAW_PORT[^\n]+\nconst PORT[^\n]+/);
+  assert.ok(match, "expected RAW_PORT/PORT derivation lines in observer.mjs");
+  const code = match[0].replace("process.env.OBSERVER_PORT", "envValue");
+  const fn = new Function("envValue", `${code}\nreturn PORT;`);
+  return fn(rawEnvValue);
+}
+
+test("port resolution: valid in-range values pass through", () => {
+  assert.equal(resolvePort("5000"), 5000);
+  assert.equal(resolvePort("1"), 1);
+  assert.equal(resolvePort("65535"), 65535);
+});
+
+test("port resolution: unset/invalid/out-of-range values fall back to 4317", () => {
+  assert.equal(resolvePort(undefined), 4317, "unset → default");
+  assert.equal(resolvePort("0"), 4317, "zero is out of range");
+  assert.equal(resolvePort("-1"), 4317, "negative is out of range");
+  assert.equal(resolvePort("70000"), 4317, "above 65535 is out of range");
+  assert.equal(resolvePort("abc"), 4317, "non-numeric");
+  assert.equal(resolvePort("4317.5"), 4317, "non-integer");
 });

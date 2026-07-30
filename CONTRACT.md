@@ -45,6 +45,8 @@ Invoked as `agentbox <command> [flags]` (via `bin/agentbox.mjs` or
 - `--cpus <val>` — docker cpu limit, e.g. `4` (also env `CPUS`).
 - `--port <n>` — observer port (default 4317).
 - `--network <mode>` — `docker build --network` mode, e.g. `host` (also env `DOCKER_NETWORK`). Unset → Docker's default build network.
+- `--gpus <val>` — `docker run --gpus` passthrough, e.g. `all` (Linux/NVIDIA).
+- `--yolo` — launch the lead with `--dangerously-skip-permissions` (teammates inherit it). Opt-in only; recorded as a `agentbox.yolo` container label so reattach can report the box's actual mode.
 - `--no-cache` — (rebuild/up) force a clean image build.
 
 ### Env overrides (precedence: **flag > env > default**)
@@ -105,9 +107,10 @@ export const session: SessionModule; // see src/types.ts
 | `config.ghConfigDir` *(if present)*   | `/home/agent/.config/gh` | **read-only** — gh CLI auth reuse  |
 
 Named cache volumes (`CACHE_VOLUMES` in types.ts): `agentbox-npm-cache`,
-`agentbox-cargo-registry`, `agentbox-pip-cache` → the box stays `--rm`,
-only tool downloads persist. Host identity mounts are read-only, existence-
-gated, and NEVER copied into the image.
+`agentbox-cargo-registry`, `agentbox-pip-cache` → the box itself stays
+disposable (removed via `down`, or replaced by `up`'s stale-container
+cleanup — see §6.7), only tool downloads persist. Host identity mounts are
+read-only, existence-gated, and NEVER copied into the image.
 
 - Publish `-p <observerPort>:<observerPort>`.
 - Apply `--memory <config.memory>` and `--cpus <config.cpus>`.
@@ -132,10 +135,13 @@ gated, and NEVER copied into the image.
    split-pane layout.
 6. Read the real TTY size via `stty size` so tmux isn't stuck at 80×24.
 7. **The tmux attach client must NEVER be container PID 1.** The container
-   runs detached (`docker run -d`); the entry script sets the session up and
-   idles while it exists, and clients attach via `docker exec … tmux attach`.
-   Otherwise `C-b d` (detach) exits PID 1, kills every agent, and `--rm`
-   deletes the container.
+   runs detached (`docker run -d`, deliberately NOT `--rm`); the entry script
+   sets the session up and idles while it exists, and clients attach via
+   `docker exec … tmux attach`. Otherwise `C-b d` (detach) exits PID 1 and
+   kills every agent. Not using `--rm` means a container that exits early
+   (entry-script crash) stays inspectable via `docker logs`; `up` removes a
+   stale stopped container before starting fresh, and `down` removes it
+   explicitly.
 
 ---
 

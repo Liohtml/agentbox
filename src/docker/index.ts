@@ -24,6 +24,7 @@ import {
   CONTAINER_GH_CONFIG,
   CONTAINER_GITCONFIG,
   CONTAINER_OBSERVER,
+  LABEL_YOLO,
 } from "../types.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -114,7 +115,9 @@ function isDir(p: string): boolean {
  *
  * Detached (-d): the entry script — not a tmux attach client — is PID 1, so
  * detaching a client can never tear the sandbox down. Attaching is a separate
- * `docker exec` (execAttach).
+ * `docker exec` (execAttach). Deliberately NOT --rm: see runContainer's doc
+ * comment in types.ts — a container that exits early stays inspectable via
+ * `docker logs`, and agentbox removes stale stopped containers itself.
  */
 export function buildRunArgs(
   config: AgentboxConfig,
@@ -124,9 +127,10 @@ export function buildRunArgs(
   const args = [
     "run",
     "-d",
-    "--rm",
     "--name",
     config.containerName,
+    "--label",
+    `${LABEL_YOLO}=${config.yolo}`,
     // ── bind mounts ──────────────────────────────────────────────────────
     "-v",
     `${config.workspace}:${CONTAINER_WORKSPACE}`,
@@ -148,7 +152,7 @@ export function buildRunArgs(
     args.push("-v", `${config.ghConfigDir}:${CONTAINER_GH_CONFIG}:ro`);
   }
 
-  // ── persistent tool caches (named volumes; the box itself stays --rm) ───
+  // ── persistent tool caches (named volumes; the box itself stays disposable) ─
   for (const [volume, target] of CACHE_VOLUMES) {
     args.push("-v", `${volume}:${target}`);
   }
@@ -280,13 +284,22 @@ export const docker: DockerModule = {
 
     if (target?.isSymbolicLink()) {
       // Dotfile managers often symlink ~/.claude.json. Follow it: if the
-      // target exists we're done; if it dangles, create the target through
-      // the symlink (flag "w" — "wx" would fail with a confusing EEXIST on
-      // the link itself).
+      // target exists it must be a FILE (a symlink to a directory would
+      // otherwise sail through and Docker would mount a directory); if it
+      // dangles, create the target through the symlink (flag "w" — "wx"
+      // would fail with a confusing EEXIST on the link itself).
+      let followed: fs.Stats | undefined;
       try {
-        fs.statSync(config.claudeJson);
+        followed = fs.statSync(config.claudeJson);
       } catch {
         fs.writeFileSync(config.claudeJson, "{}\n", { flag: "w" });
+        return;
+      }
+      if (!followed.isFile()) {
+        throw new Error(
+          `${config.claudeJson} is a symlink to something other than a file.\n` +
+            `Fix or remove the symlink and run agentbox again.`,
+        );
       }
       return;
     }
@@ -337,5 +350,21 @@ export const docker: DockerModule = {
     ]);
     const arch = stdout.trim();
     return code === 0 && arch.length > 0 ? arch : undefined;
+  },
+
+  async containerLabels(name: string): Promise<Record<string, string>> {
+    const { code, stdout } = await capture([
+      "inspect",
+      "--format",
+      "{{json .Config.Labels}}",
+      name,
+    ]);
+    if (code !== 0) return {};
+    try {
+      const parsed = JSON.parse(stdout.trim());
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
   },
 };

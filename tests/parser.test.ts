@@ -45,17 +45,35 @@ test("boolean flags take no value", () => {
   assert.equal(p.flags["no-cache"], true);
 });
 
-test("a value flag missing its value records boolean presence", () => {
+test("a value flag missing its value records boolean presence AND is reported as missing", () => {
   // --workspace at the end with no following token.
   const p = parseArgs(["up", "--workspace"]);
   assert.equal(p.flags.workspace, true);
+  assert.deepEqual(p.missingValueFlags, ["workspace"]);
 });
 
-test("a value flag followed by another flag does not consume it", () => {
+test("a value flag followed by another flag does not consume it, and is reported as missing", () => {
   const p = parseArgs(["up", "--workspace", "--port", "4000"]);
   // workspace had no real value (next token is a flag) → boolean presence.
   assert.equal(p.flags.workspace, true);
   assert.equal(p.flags.port, "4000");
+  assert.deepEqual(p.missingValueFlags, ["workspace"]);
+});
+
+test("a bare --gpus with no value is reported as missing (must not silently disable the GPU request)", () => {
+  const p = parseArgs(["up", "--gpus"]);
+  assert.equal(p.flags.gpus, true);
+  assert.deepEqual(p.missingValueFlags, ["gpus"]);
+});
+
+test("missingValueFlags is empty when every value flag got a real value", () => {
+  const p = parseArgs(["up", "--workspace", "/tmp/proj", "--port", "5000"]);
+  assert.deepEqual(p.missingValueFlags, []);
+});
+
+test("a boolean-only flag (--yolo, --no-cache) is never reported as missing a value", () => {
+  const p = parseArgs(["up", "--yolo", "--no-cache"]);
+  assert.deepEqual(p.missingValueFlags, []);
 });
 
 test("-h sets help and helpRequested", () => {

@@ -30,9 +30,13 @@ Examples of unacceptable behavior:
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the maintainers via a GitHub issue (for non-sensitive matters) or
-privately via [GitHub Security Advisories](https://github.com/Liohtml/agentbox/security/advisories/new).
-All complaints will be reviewed and investigated promptly and fairly.
+reported via a GitHub issue (for non-sensitive matters) or, for anything you'd
+rather not post publicly, by contacting the maintainer directly:
+[@Liohtml](https://github.com/Liohtml). All complaints will be reviewed and
+investigated promptly and fairly.
+
+(Security vulnerabilities have their own private channel — see
+[SECURITY.md](SECURITY.md); please don't use it for conduct reports.)
 
 For the full text including enforcement guidelines, see the
 [Contributor Covenant v2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).

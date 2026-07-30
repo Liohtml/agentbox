@@ -11,7 +11,9 @@ import {
   CONTAINER_ENTRY,
   CONTAINER_GH_CONFIG,
   CONTAINER_GITCONFIG,
+  CONTAINER_OBSERVER,
   CONTAINER_WORKSPACE,
+  LABEL_YOLO,
   type AgentboxConfig,
   type TtySize,
 } from "../src/types.ts";
@@ -56,12 +58,25 @@ test("runs detached (-d), never interactive: the entry script must be PID 1", ()
   assert.ok(!args.includes("-it"));
 });
 
+test("does NOT use --rm: a container that exits early must stay inspectable via docker logs", () => {
+  const args = buildRunArgs(baseConfig(), TTY, NONE);
+  assert.ok(!args.includes("--rm"));
+});
+
 test("mounts workspace, claude dir/json, entry script and observer", () => {
   const mounts = valuesOf(buildRunArgs(baseConfig(), TTY, NONE), "-v");
   assert.ok(mounts.includes(`/home/u/proj:${CONTAINER_WORKSPACE}`));
   assert.ok(mounts.includes("/home/u/.claude:/home/agent/.claude"));
   assert.ok(mounts.includes("/home/u/.claude.json:/home/agent/.claude.json"));
   assert.ok(mounts.includes(`/tmp/agentbox-1000/entry.sh:${CONTAINER_ENTRY}`));
+  assert.ok(mounts.includes(`/repo/assets/observer.mjs:${CONTAINER_OBSERVER}`));
+});
+
+test("labels the container with its --yolo startup state (for accurate reattach reporting)", () => {
+  const off = valuesOf(buildRunArgs(baseConfig(), TTY, NONE), "--label");
+  assert.deepEqual(off, [`${LABEL_YOLO}=false`]);
+  const on = valuesOf(buildRunArgs(baseConfig({ yolo: true }), TTY, NONE), "--label");
+  assert.deepEqual(on, [`${LABEL_YOLO}=true`]);
 });
 
 test("publishes the observer port on loopback ONLY", () => {

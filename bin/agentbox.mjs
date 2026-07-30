@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 /**
  * agentbox launcher. Runs the TypeScript CLI through tsx without a build step.
- * Works whether tsx is installed locally (node_modules) or globally on PATH.
  */
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -10,35 +9,30 @@ import { dirname, resolve } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const entry = resolve(here, "..", "src", "index.ts");
-
-// Prefer the locally-installed tsx so a fresh clone (or the published
-// package, where tsx is a runtime dependency) works with no global tsx.
-// Invoke tsx's JS entry with the current node binary instead of the .bin
-// shim: no shell involved, so paths with spaces and cmd.exe metacharacters
-// can never break or inject (the .cmd shim needed shell:true on Windows).
-const isWin = process.platform === "win32";
 const localTsxCli = resolve(here, "..", "node_modules", "tsx", "dist", "cli.mjs");
-const useLocal = existsSync(localTsxCli);
 
-const child = useLocal
-  ? spawn(process.execPath, [localTsxCli, entry, ...process.argv.slice(2)], {
-      stdio: "inherit",
-      env: process.env,
-    })
-  : spawn("tsx", [entry, ...process.argv.slice(2)], {
-      stdio: "inherit",
-      env: process.env,
-      shell: isWin, // PATH fallback: a global tsx is a .cmd shim on Windows
-    });
+if (!existsSync(localTsxCli)) {
+  // tsx is a runtime dependency of agentbox (package.json), so this should
+  // always be present after install. No shell-based global-PATH fallback:
+  // that used to run `tsx` via a shell (required for the Windows .cmd shim),
+  // which forwarded raw argv through cmd.exe with no metacharacter escaping.
+  console.error(
+    "agentbox: 'tsx' is missing from node_modules (expected at " +
+      `${localTsxCli}).\n` +
+      "Run 'npm install' to reinstall agentbox's dependencies.",
+  );
+  process.exit(127);
+}
+
+// Invoke tsx's JS entry with the current node binary directly — no shell, so
+// paths with spaces are safe and no shell can interpret metacharacters in
+// forwarded argv.
+const child = spawn(process.execPath, [localTsxCli, entry, ...process.argv.slice(2)], {
+  stdio: "inherit",
+  env: process.env,
+});
 
 child.on("error", (err) => {
-  if (err && err.code === "ENOENT") {
-    console.error(
-      "agentbox: 'tsx' not found. Run 'npm install' in the agentbox repo, " +
-        "or install it globally: npm i -g tsx",
-    );
-    process.exit(127);
-  }
   console.error("agentbox:", err.message);
   process.exit(1);
 });

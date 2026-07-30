@@ -6,6 +6,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { session } from "../src/session/index.ts";
 import {
   CONTAINER_OBSERVER,
@@ -142,4 +145,33 @@ test("main window is selected last so the user lands on the lead", () => {
     s.indexOf("new-window") < s.indexOf("select-window"),
     "observer window is created before selecting main",
   );
+});
+
+// ── writeEntryScript: temp-dir ownership/permission hardening ──────────────
+// mkdirSync's `mode` only applies when it CREATES the directory; if another
+// local process pre-created it (predictable path: agentbox-<uid>), the mode
+// is silently ignored. writeEntryScript must verify ownership/permissions
+// itself rather than trusting a pre-existing directory. POSIX-only (no
+// process.getuid on Windows).
+const posixOnly = typeof process.getuid === "function" ? test : test.skip;
+
+posixOnly("writeEntryScript succeeds when it creates the temp dir itself", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentbox-test-"));
+  fs.rmSync(dir, { recursive: true, force: true }); // let writeEntryScript create it fresh
+  const scriptPath = path.join(dir, "entry.sh");
+  const written = session.writeEntryScript(baseConfig({ entryScriptPath: scriptPath }), TTY);
+  assert.equal(written, scriptPath);
+  assert.ok(fs.existsSync(scriptPath));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+posixOnly("writeEntryScript refuses a pre-existing world-writable temp dir", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentbox-test-"));
+  fs.chmodSync(dir, 0o777); // simulate another local user's permissive pre-created dir
+  const scriptPath = path.join(dir, "entry.sh");
+  assert.throws(
+    () => session.writeEntryScript(baseConfig({ entryScriptPath: scriptPath }), TTY),
+    /refusing to write the entry script/,
+  );
+  fs.rmSync(dir, { recursive: true, force: true });
 });

@@ -9,7 +9,7 @@
  * modules. It owns NO docker/tmux logic itself — it only sequences calls.
  */
 import fs from "node:fs";
-import type { AgentboxConfig } from "../types.ts";
+import { type AgentboxConfig, LABEL_YOLO } from "../types.ts";
 import { docker } from "../docker/index.ts";
 import { session } from "../session/index.ts";
 import { parseArgs } from "./parser.ts";
@@ -71,6 +71,18 @@ export async function run(argv: string[]): Promise<number> {
     return 1;
   }
 
+  // A value flag given with no value (e.g. a trailing `--gpus`) must not
+  // silently fall back to "not requested" — that already burned --port/
+  // --memory/--cpus before validateConfig existed, and would otherwise still
+  // silently disable --gpus today.
+  if (parsed.missingValueFlags.length > 0) {
+    console.error(
+      `agentbox: flag${parsed.missingValueFlags.length > 1 ? "s" : ""} require a value: ` +
+        parsed.missingValueFlags.map((f) => `--${f}`).join(", "),
+    );
+    return 1;
+  }
+
   // Commands take no extra positionals (only `help <command>` does).
   if (parsed.positionals.length > 1) {
     console.error(
@@ -83,8 +95,11 @@ export async function run(argv: string[]): Promise<number> {
   const forceNoCache = parsed.flags["no-cache"] === true;
 
   // Fail fast on invalid input — before any (potentially minutes-long) Docker
-  // work. `doctor` is exempt: it reports problems as its ✓/✗ checklist.
-  if (parsed.command !== "doctor") {
+  // work. Scoped to up/rebuild only: `shell`/`down` must stay usable to tear
+  // down or inspect a box even if MEM/CPUS/workspace are currently bogus, and
+  // `doctor` reports the same validateConfig() problems as part of its
+  // checklist instead of hard-failing here.
+  if (parsed.command === "up" || parsed.command === "rebuild") {
     const problems = validateConfig(config);
     if (problems.length > 0) {
       for (const p of problems) console.error(`agentbox: ${p}`);
@@ -109,12 +124,6 @@ export async function run(argv: string[]): Promise<number> {
     ["workspace", "port", "memory", "cpus", "gpus"].some(
       (f) => typeof parsed.flags[f] === "string",
     ) || parsed.flags.yolo === true;
-
-  if (config.yolo && (parsed.command === "up" || parsed.command === "rebuild")) {
-    console.error(
-      "agentbox: --yolo — the Claude lead (and its teammates) will skip ALL permission prompts inside the box.",
-    );
-  }
 
   try {
     switch (parsed.command) {
@@ -176,16 +185,25 @@ async function cmdUp(
   if (running) {
     if (opts.warnOnReattach) {
       console.error(
-        `agentbox: note — the box is already running; --workspace/--port/--memory/--cpus are ignored on reattach.\n` +
+        `agentbox: note — the box is already running; --workspace/--port/--memory/--cpus/--gpus/--yolo are ignored on reattach.\n` +
           `Use 'agentbox down' first to start a fresh box with new settings.`,
       );
     }
-    console.log(`agentbox: reattaching to running container '${config.containerName}'…`);
+    // Report the RUNNING container's actual startup mode (via its label),
+    // never the current invocation's --yolo flag: that flag is ignored on
+    // reattach, so echoing it back would be wrong in either direction (claim
+    // prompts are disabled when they aren't, or vice versa).
+    const labels = await safe(() => docker.containerLabels(config.containerName), {});
+    const actualYolo = labels[LABEL_YOLO] === "true";
+    console.log(
+      `agentbox: reattaching to running container '${config.containerName}' ` +
+        `(${actualYolo ? "started with --yolo — permission prompts are disabled" : "permission prompts active"})…`,
+    );
     return await docker.execAttach(config, session.attachCommand(config));
   }
 
-  // A stopped-but-present container (e.g. an --rm corpse after a daemon
-  // restart) would make `docker run --name` fail with a name conflict.
+  // A stopped-but-present container (from a previous run that exited, or a
+  // daemon restart) would make `docker run --name` fail with a name conflict.
   if (await docker.containerExists(config.containerName)) {
     console.log(`agentbox: removing stale container '${config.containerName}'…`);
     await docker.removeContainer(config.containerName);
@@ -204,6 +222,12 @@ async function cmdUp(
   const tty = session.readTtySize();
   session.writeEntryScript(config, tty);
 
+  if (config.yolo) {
+    console.error(
+      "agentbox: --yolo — the Claude lead (and its teammates) will skip ALL permission prompts inside the box.",
+    );
+  }
+
   console.log(`agentbox: starting sandbox — Observer at http://localhost:${config.observerPort}…`);
   const started = await docker.runContainer(config, tty);
   if (started !== 0) {
@@ -213,6 +237,8 @@ async function cmdUp(
 
   // The container is detached; wait for the entry script to create the tmux
   // session, then attach a client. Detaching later only ends the client.
+  // Not --rm (see docker/index.ts): if the entry script crashes and the
+  // container exits early, it stays around for `docker logs` to inspect.
   const ready = await waitForSession(config, 15000);
   if (!ready) {
     console.error(
@@ -224,7 +250,11 @@ async function cmdUp(
   return await docker.execAttach(config, session.attachCommand(config));
 }
 
-/** Poll until the in-container tmux session exists (or the timeout passes). */
+/**
+ * Poll until the in-container tmux session exists, the container exits
+ * early (entry-script crash — no point waiting out the full timeout), or the
+ * timeout passes.
+ */
 async function waitForSession(config: AgentboxConfig, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -238,6 +268,7 @@ async function waitForSession(config: AgentboxConfig, timeoutMs: number): Promis
     ) {
       return true;
     }
+    if (!(await docker.containerRunning(config.containerName))) return false;
     if (Date.now() >= deadline) return false;
     await new Promise((r) => setTimeout(r, 250));
   }
@@ -318,11 +349,15 @@ async function cmdDoctor(config: AgentboxConfig): Promise<number> {
     );
   }
 
-  // Observer port validity.
-  const portOk = Number.isInteger(config.observerPort) && config.observerPort > 0 &&
-    config.observerPort <= 65535;
-  line(portOk, `Observer port is valid: ${config.observerPort}`);
-  if (!portOk) hardFailure = true;
+  // Config validity — the same checks `up`/`rebuild` fail fast on, reported
+  // here as part of doctor's checklist instead of a hard-fail.
+  const configProblems = validateConfig(config);
+  if (configProblems.length === 0) {
+    line(true, "Config values are valid (port/memory/cpus/paths)");
+  } else {
+    for (const p of configProblems) line(false, p);
+    hardFailure = true;
+  }
 
   // tmux-in-image: docker module exposes no exec-into-image helper, so we note
   // that tmux is provided by the Dockerfile and exercised at container start.

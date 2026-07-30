@@ -48,7 +48,7 @@ node bin/agentbox.mjs doctor
 node bin/agentbox.mjs up --workspace ~/code/myapp
 ```
 
-First run builds the image (a few minutes). Later runs reuse it and start instantly. When you exit, the container is removed (`--rm`); your work and credentials persist on the host.
+First run builds the image (a few minutes). Later runs reuse it and start instantly. Your work and credentials always live on the host (bind-mounted, never baked in) — the container itself is disposable: `agentbox down` removes it explicitly, and `agentbox up` cleans up a leftover stopped container automatically before starting a fresh one.
 
 ### Install it on your PATH (recommended)
 
@@ -124,7 +124,7 @@ WORKSPACE=~/code/myapp MEM=8g CPUS=6 agentbox up --port 5000
 1. **Builds the image** from `assets/Dockerfile` if it's missing — Ubuntu 24.04 with Node 22, Python 3, Rust (rustup), git, tmux, and Claude Code + `tsx` installed globally. It runs as the non-root user **`agent`** and never contains credentials.
 2. **Prepares the host bind mounts** (below), touching `~/.claude.json` first so Docker mounts a *file*, not a directory.
 3. **Generates a tmux entry script** sized to your real terminal (read via `stty size`, so tmux isn't stuck at 80×24).
-4. **Runs the container detached** (`docker run -d --rm`, with `--memory`/`--cpus` limits and the Observer port published), launching the entry script via **`bash /agentbox/entry.sh`** — using `bash` so a missing execute bit can never block startup. The entry script sets the tmux session up and stays alive as PID 1; agentbox then attaches your terminal via `docker exec … tmux attach`. Detaching (`Ctrl+b d`) only ends that client — the box, the lead, and all teammates keep running. If the container is already running, `up` just reattaches.
+4. **Runs the container detached** (`docker run -d`, with `--memory`/`--cpus` limits and the Observer port published), launching the entry script via **`bash /agentbox/entry.sh`** — using `bash` so a missing execute bit can never block startup. The entry script sets the tmux session up and stays alive as PID 1; agentbox then attaches your terminal via `docker exec … tmux attach`. Detaching (`Ctrl+b d`) only ends that client — the box, the lead, and all teammates keep running. If the container is already running, `up` just reattaches. Deliberately not `--rm`: if the entry script fails, the container stays around so `docker logs` can show you why; agentbox removes any stale stopped container itself before the next `up`, and `agentbox down` removes it explicitly.
 
 ### Bind mounts (host → container)
 
@@ -141,8 +141,9 @@ WORKSPACE=~/code/myapp MEM=8g CPUS=6 agentbox up --port 5000
 Additionally, three **named Docker volumes** persist tool caches across boxes
 (`agentbox-npm-cache` → `~/.npm`, `agentbox-cargo-registry` → `~/.cargo/registry`,
 `agentbox-pip-cache` → `~/.cache/pip`). The box itself stays disposable
-(`--rm`); only downloaded packages survive, so fresh boxes skip the
-cold-start tax. Remove them any time with `docker volume rm`.
+(`agentbox down` / `up`'s stale-container cleanup); only downloaded packages
+survive, so fresh boxes skip the cold-start tax. Remove the caches any time
+with `docker volume rm`.
 
 ### The tmux layout
 
@@ -171,7 +172,7 @@ The `main` window starts the Claude Code lead with Agent Teams enabled. Just tal
 
 ## Security & trust
 
-agentbox isolates **resources** (CPU/memory caps, a throwaway `--rm` container, a non-root `agent` user) — but it is **not a security sandbox for untrusted code**. Two things to be clear about:
+agentbox isolates **resources** (CPU/memory caps, a disposable container, a non-root `agent` user) — but it is **not a security sandbox for untrusted code**. Two things to be clear about:
 
 - **Your host Claude credentials are mounted read-write.** `~/.claude` and `~/.claude.json` carry your OAuth token, the list of every project path you've opened, and full session transcripts under `~/.claude/projects`. Anything running inside the box can read or modify them. That includes `~/.claude/settings.json` and hooks — code in the box could plant a hook that your **host** Claude Code executes later, i.e. the mount is a container-to-host escape channel for untrusted workloads. Only run workloads you trust. (Narrowing this mount to just credentials is on the [roadmap](ROADMAP.md).)
 - **The container is a workbench, not a jail.** Treat it as a clean, disposable, resource-capped place for *your own* agentic workflows — not as a barrier against malicious code. (The Observer is published to `127.0.0.1` only, so its unauthenticated dashboard never leaks to the LAN.)
@@ -226,7 +227,7 @@ Baked into the implementation and the [contract](CONTRACT.md):
 3. **The Observer lives in its own window**, never a pane in `main` — Claude's tmux teammate mode only splits the lead's window into panes if that window is otherwise empty.
 4. **The entry script is launched via `bash`**, so a missing execute bit can't block startup.
 5. **TTY size is read with `stty size`** so tmux opens at your real terminal dimensions instead of the 80×24 default.
-6. **The tmux attach client is never container PID 1.** The container runs detached and your terminal attaches via `docker exec`, so `Ctrl+b d` detaches without tearing down the sandbox. (If the attach client were PID 1, a detach would kill every agent and `--rm` would delete the container.)
+6. **The tmux attach client is never container PID 1.** The container runs detached and your terminal attaches via `docker exec`, so `Ctrl+b d` detaches without tearing down the sandbox. (If the attach client were PID 1, a detach would kill every agent and stop the container outright.)
 7. **The lead is launched with `--teammate-mode tmux`** — since Claude Code v2.1.179 the default is `in-process`, which would silently disable the split-pane team layout agentbox is built around.
 
 ---

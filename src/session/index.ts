@@ -62,10 +62,10 @@ function readTtySize(): TtySize {
  *
  * CRITICAL lifecycle fact: the tmux *client* must never be the container's
  * main process. If it were (the old `exec tmux attach` design), a plain
- * `C-b d` detach would exit PID 1, tear down the whole PID namespace (lead,
- * teammates, Observer) and — with `--rm` — delete the container. Instead this
- * script sets the session up detached and then idles while the tmux SERVER
- * has the session; clients attach via `docker exec` (see cli/docker modules).
+ * `C-b d` detach would exit PID 1 and tear down the whole PID namespace
+ * (lead, teammates, Observer). Instead this script sets the session up
+ * detached and then idles while the tmux SERVER has the session; clients
+ * attach via `docker exec` (see cli/docker modules).
  * Detach only ends the exec'd client; ending the tmux session ends PID 1 and
  * therefore the container.
  */
@@ -121,7 +121,7 @@ fi
 
 # Keep PID 1 alive for as long as the tmux session lives. When the user ends
 # the session (kills the last window / 'tmux kill-session'), this loop exits
-# and '--rm' removes the container.
+# and the container stops (agentbox removes it on the next 'up', or 'down').
 while tmux has-session -t "$SESSION" 2>/dev/null; do
   sleep 2
 done
@@ -135,7 +135,28 @@ done
  */
 function writeEntryScript(config: AgentboxConfig, tty: TtySize): string {
   const script = buildEntryScript(config, tty);
-  mkdirSync(dirname(config.entryScriptPath), { recursive: true, mode: 0o700 });
+  const dir = dirname(config.entryScriptPath);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+
+  // mkdirSync's `mode` only applies when IT creates the directory — if the
+  // dir already existed (e.g. another local user pre-created it to race us),
+  // the mode is silently ignored and left as whatever the pre-existing dir
+  // had. Verify ownership + permissions after the fact and refuse to write
+  // into a directory we don't fully control (POSIX only; Windows has no
+  // comparable multi-user /tmp attack surface here).
+  if (typeof process.getuid === "function") {
+    const st = lstatSync(dir);
+    const mode = st.mode & 0o777;
+    if (st.uid !== process.getuid() || (mode & 0o077) !== 0) {
+      throw new Error(
+        `refusing to write the entry script into ${dir}: it is owned by uid ` +
+          `${st.uid} (expected ${process.getuid()}) or is group/other-accessible ` +
+          `(mode ${mode.toString(8)}). Remove it and re-run agentbox:\n` +
+          `  rm -rf '${dir}'`,
+      );
+    }
+  }
+
   // Never write through a pre-existing symlink at the target path.
   try {
     if (lstatSync(config.entryScriptPath).isSymbolicLink()) {

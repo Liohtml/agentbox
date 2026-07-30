@@ -6,6 +6,41 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed (review follow-up)
+- The container no longer runs with `--rm`: a container that exits early
+  (entry-script crash) now stays around for `docker logs` to inspect instead
+  of vanishing immediately. `up` removes a stale stopped container before
+  starting fresh; `down` still removes it explicitly; `waitForSession` now
+  also gives up early if the container itself exits instead of polling out
+  the full timeout.
+- Reattaching now reports the **running container's actual** `--yolo` state
+  (via a container label) instead of echoing back the current invocation's
+  flag, which is ignored on reattach and could previously claim the wrong
+  thing in either direction.
+- A value flag given with no value (e.g. a trailing `--gpus`) is now a hard
+  error instead of silently being dropped.
+- `validateConfig` (and the "workspace must exist" check) now only gate
+  `up`/`rebuild`; `shell`/`down` stay usable even with a currently-invalid
+  `MEM`/`CPUS`/workspace. `doctor` now reports every `validateConfig`
+  problem explicitly instead of a separate, narrower ad hoc port check.
+- `~/.claude.json` symlinked to a directory is now a clear error (previously
+  it silently passed through and Docker mounted a directory).
+- The generated entry script's temp directory is verified (owner uid + no
+  group/other permissions) after creation, closing a race where another
+  local user could pre-create it to intercept the mounted script.
+- Launcher: dropped the shell-based global-`tsx`-on-PATH fallback (it forwarded
+  raw argv through a shell, letting metacharacters be interpreted on
+  Windows); `tsx` is a runtime dependency now, so a missing local install is
+  a clear, actionable error instead.
+- CI/release workflows: `persist-credentials: false` on all checkouts; the
+  release workflow now verifies the pushed tag matches `package.json`'s
+  version, runs the `npm pack` tarball smoke test as a publish gate, and
+  disables dependency caching (a compromised cache must never influence what
+  gets published).
+- Dockerfile: `CLAUDE_CODE_VERSION`/`TSX_VERSION` build-arg defaults are now
+  pinned exact versions instead of `latest`, so a plain rebuild is
+  reproducible; override the args for an intentional upgrade.
+
 ### Fixed
 - **Detaching no longer destroys the sandbox.** The container now runs
   detached with the entry script as PID 1 and your terminal attaches via
@@ -56,12 +91,14 @@ adheres to [Semantic Versioning](https://semver.org/).
   `--dangerously-skip-permissions` (teammates inherit it). Opt-in per
   invocation, never the default — see README → Security & trust.
 - **Persistent tool-cache volumes**: named Docker volumes for `~/.npm`,
-  `~/.cargo/registry` and pip's cache. Boxes stay `--rm`-disposable; only
-  downloaded packages survive.
+  `~/.cargo/registry` and pip's cache. The box itself stays disposable
+  (`down` / `up`'s stale-container cleanup); only downloaded packages
+  survive.
 - **Git identity + `gh` auth forwarding**: `~/.gitconfig` and `~/.config/gh`
   are bind-mounted read-only when present, and the `gh` CLI is installed in
-  the image — agents can commit and open PRs as you, without any credential
-  ever entering the image.
+  the image — agents can commit and open PRs as you. Credentials are never
+  baked into the image, but note they *are* readable at runtime by anything
+  running inside the container, same as the existing Claude credential mount.
 - **`--gpus` passthrough** to `docker run --gpus` (e.g. `all`, `device=0`).
 - `doctor` warns when the local image architecture doesn't match the host
   (emulated images are painfully slow under qemu).
