@@ -8,7 +8,8 @@
  * Import style: ESM with explicit `.ts` extensions.
  */
 import { execSync } from "node:child_process";
-import { writeFileSync, chmodSync } from "node:fs";
+import { writeFileSync, chmodSync, mkdirSync, lstatSync, rmSync } from "node:fs";
+import { dirname } from "node:path";
 
 import {
   CONTAINER_OBSERVER,
@@ -57,7 +58,16 @@ function readTtySize(): TtySize {
 }
 
 /**
- * Build the bash entry script that runs INSIDE the container.
+ * Build the bash entry script that runs INSIDE the container as PID 1.
+ *
+ * CRITICAL lifecycle fact: the tmux *client* must never be the container's
+ * main process. If it were (the old `exec tmux attach` design), a plain
+ * `C-b d` detach would exit PID 1 and tear down the whole PID namespace
+ * (lead, teammates, Observer). Instead this script sets the session up
+ * detached and then idles while the tmux SERVER has the session; clients
+ * attach via `docker exec` (see cli/docker modules).
+ * Detach only ends the exec'd client; ending the tmux session ends PID 1 and
+ * therefore the container.
  */
 function buildEntryScript(config: AgentboxConfig, tty: TtySize): string {
   const session = config.sessionName;
@@ -67,7 +77,14 @@ function buildEntryScript(config: AgentboxConfig, tty: TtySize): string {
   const observerPort = config.observerPort;
 
   // Command run in the `main` window: enable Agent Teams, launch Claude lead.
-  const leadCmd = "export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1; claude";
+  // `--teammate-mode tmux` is required for teammates to appear as split
+  // panes: since Claude Code v2.1.179 the default teammateMode is
+  // "in-process", which silently disables the split-pane layout agentbox is
+  // built around. --yolo opts into skipping permission prompts (teammates
+  // inherit the lead's permission mode).
+  const leadCmd =
+    "export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1; claude --teammate-mode tmux" +
+    (config.yolo ? " --dangerously-skip-permissions" : "");
   // Command run in the `observer` window: the dashboard web server.
   const observerCmd = `OBSERVER_PORT=${observerPort} node ${shSingleQuote(
     CONTAINER_OBSERVER,
@@ -75,46 +92,85 @@ function buildEntryScript(config: AgentboxConfig, tty: TtySize): string {
 
   return `#!/usr/bin/env bash
 # agentbox entry script — generated; run via: bash /agentbox/entry.sh
+# Runs as container PID 1: sets the tmux session up, then idles while the
+# session exists. Attach happens via 'docker exec … tmux attach'.
 set -euo pipefail
 
 SESSION=${sessionQ}
 
-# Reattach if the session already exists.
-if tmux has-session -t "$SESSION" 2>/dev/null; then
-  exec tmux attach -t "$SESSION"
+if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+  # Create a new detached session sized to the real TTY. Window 'main' will
+  # host the Claude lead (Agent Teams enabled).
+  tmux new-session -d -s "$SESSION" -n main -x ${cols} -y ${rows}
+
+  # Launch the Claude lead in the 'main' window with Agent Teams enabled.
+  tmux send-keys -t "$SESSION":main ${shSingleQuote(leadCmd)} C-m
+
+  # Observer dashboard in its OWN window (NEVER a pane in main: teammateMode
+  # tmux only splits panes if the lead window is otherwise empty). Keep the
+  # window around if the server crashes so the error output stays readable.
+  tmux new-window -t "$SESSION" -n observer ${shSingleQuote(observerCmd)}
+  tmux set-option -w -t "$SESSION":observer remain-on-exit on
+
+  # C-b t → main-vertical layout (lead left, teammates right).
+  tmux bind-key -T prefix t select-layout main-vertical
+
+  # Land the user on the Claude lead.
+  tmux select-window -t "$SESSION":main
 fi
 
-# Create a new detached session sized to the real TTY. Window 'main' will host
-# the Claude lead (Agent Teams enabled).
-tmux new-session -d -s "$SESSION" -n main -x ${cols} -y ${rows}
-
-# Launch the Claude lead in the 'main' window with Agent Teams enabled.
-tmux send-keys -t "$SESSION":main ${shSingleQuote(leadCmd)} C-m
-
-# Observer dashboard in its OWN window (NEVER a pane in main: teammateMode tmux
-# only splits panes if the lead window is otherwise empty).
-tmux new-window -t "$SESSION" -n observer ${shSingleQuote(observerCmd)}
-
-# C-b t → main-vertical layout (lead left, teammates right).
-tmux bind-key -T prefix t select-layout main-vertical
-
-# Land the user on the Claude lead.
-tmux select-window -t "$SESSION":main
-
-# Attach.
-exec tmux attach -t "$SESSION"
+# Keep PID 1 alive for as long as the tmux session lives. When the user ends
+# the session (kills the last window / 'tmux kill-session'), this loop exits
+# and the container stops (agentbox removes it on the next 'up', or 'down').
+while tmux has-session -t "$SESSION" 2>/dev/null; do
+  sleep 2
+done
 `;
 }
 
 /**
  * Write the entry script to config.entryScriptPath and return that path.
+ * The parent directory is created user-only (0700) — see cli/config.ts for
+ * why the script must not live at a fixed path in the shared temp dir.
  */
 function writeEntryScript(config: AgentboxConfig, tty: TtySize): string {
   const script = buildEntryScript(config, tty);
+  const dir = dirname(config.entryScriptPath);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+
+  // mkdirSync's `mode` only applies when IT creates the directory — if the
+  // dir already existed (e.g. another local user pre-created it to race us),
+  // the mode is silently ignored and left as whatever the pre-existing dir
+  // had. Verify ownership + permissions after the fact and refuse to write
+  // into a directory we don't fully control (POSIX only; Windows has no
+  // comparable multi-user /tmp attack surface here).
+  if (typeof process.getuid === "function") {
+    const st = lstatSync(dir);
+    const mode = st.mode & 0o777;
+    if (st.uid !== process.getuid() || (mode & 0o077) !== 0) {
+      throw new Error(
+        `refusing to write the entry script into ${dir}: it is owned by uid ` +
+          `${st.uid} (expected ${process.getuid()}) or is group/other-accessible ` +
+          `(mode ${mode.toString(8)}). Remove it and re-run agentbox:\n` +
+          `  rm -rf '${dir}'`,
+      );
+    }
+  }
+
+  // Never write through a pre-existing symlink at the target path.
+  try {
+    if (lstatSync(config.entryScriptPath).isSymbolicLink()) {
+      rmSync(config.entryScriptPath);
+    }
+  } catch {
+    // does not exist — fine
+  }
   writeFileSync(config.entryScriptPath, script, { encoding: "utf8" });
   try {
-    // Execute bit is irrelevant (launched via `bash`), but harmless.
-    chmodSync(config.entryScriptPath, 0o755);
+    // World-readable so the in-container 'agent' user (uid 1000) can read the
+    // bind-mounted file even when the host uid differs; the 0700 parent dir
+    // keeps other host users out. Execute bit irrelevant (launched via bash).
+    chmodSync(config.entryScriptPath, 0o644);
   } catch {
     // non-fatal
   }
@@ -122,7 +178,7 @@ function writeEntryScript(config: AgentboxConfig, tty: TtySize): string {
 }
 
 /**
- * The argv to reattach an existing in-container tmux session.
+ * The argv to attach to the in-container tmux session (via docker exec).
  */
 function attachCommand(config: AgentboxConfig): string[] {
   return ["bash", "-lc", `tmux attach -t ${shSingleQuote(config.sessionName)}`];

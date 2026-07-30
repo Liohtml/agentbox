@@ -28,6 +28,24 @@ export const CONTAINER_CLAUDE_JSON = "/home/agent/.claude.json";
 export const CONTAINER_ENTRY = "/agentbox/entry.sh";
 /** Observer server (bundled asset) bind-mounted to this path. */
 export const CONTAINER_OBSERVER = "/agentbox/observer.mjs";
+/** Host git identity, mounted read-only (only when present on the host). */
+export const CONTAINER_GITCONFIG = "/home/agent/.gitconfig";
+/** Host gh CLI auth, mounted read-only (only when present on the host). */
+export const CONTAINER_GH_CONFIG = "/home/agent/.config/gh";
+
+/** Container label recording whether the box was started with --yolo. */
+export const LABEL_YOLO = "agentbox.yolo";
+
+/**
+ * Named Docker volumes for tool caches: npm/cargo/pip downloads survive
+ * between boxes even though the container itself is not auto-removed on
+ * exit (see DockerModule.runContainer).
+ */
+export const CACHE_VOLUMES: ReadonlyArray<readonly [volume: string, target: string]> = [
+  ["agentbox-npm-cache", "/home/agent/.npm"],
+  ["agentbox-cargo-registry", "/home/agent/.cargo/registry"],
+  ["agentbox-pip-cache", "/home/agent/.cache/pip"],
+];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Config schema. Built by cli.resolveConfig() from env + flags + defaults.
@@ -58,6 +76,24 @@ export interface AgentboxConfig {
    * Unset → Docker's default build network. env: DOCKER_NETWORK / flag: --network.
    */
   buildNetwork?: string;
+  /**
+   * Launch the Claude lead with --dangerously-skip-permissions (teammates
+   * inherit it). Opt-in via --yolo — the disposable, resource-capped box is
+   * the environment that flag exists for, but it stays off by default.
+   */
+  yolo: boolean;
+  /** Optional `docker run --gpus` value (e.g. "all", "device=0"). flag: --gpus. */
+  gpus?: string;
+  /**
+   * Host ~/.gitconfig candidate path. Mounted READ-ONLY into the container
+   * (git identity reuse) only if it exists at run time.
+   */
+  gitconfigPath: string;
+  /**
+   * Host ~/.config/gh candidate dir. Mounted READ-ONLY into the container
+   * (gh CLI auth reuse) only if it exists at run time.
+   */
+  ghConfigDir: string;
   /** Path to the Dockerfile (assets/Dockerfile). */
   dockerfile: string;
   /** Build context dir for `docker build` (the assets dir). */
@@ -111,10 +147,14 @@ export interface DockerModule {
    */
   ensureHostMounts(config: AgentboxConfig): Promise<void>;
   /**
-   * Run a fresh container interactively (inherits stdio), with bind mounts,
-   * published observer port, and --memory/--cpus limits. Launches the entry
-   * script via `bash CONTAINER_ENTRY` (never relies on an execute bit).
-   * Resolves with the container's exit code when the user detaches/exits.
+   * Run a fresh container DETACHED (-d), with bind mounts, published observer
+   * port, and --memory/--cpus limits. Launches the entry script via
+   * `bash CONTAINER_ENTRY` (never relies on an execute bit) as container
+   * PID 1 — never a tmux attach client, so detaching a client cannot tear
+   * down the sandbox. Deliberately NOT --rm: a container that exits early
+   * (entry script crash) stays inspectable via `docker logs`; `up` removes
+   * a stale stopped container before starting a fresh one, and `down`
+   * removes it explicitly. Resolves with `docker run`'s exit code.
    */
   runContainer(config: AgentboxConfig, tty: TtySize): Promise<number>;
   /**
@@ -123,6 +163,24 @@ export interface DockerModule {
    * the exit code. `command` overrides the exec command (default: reattach tmux).
    */
   execAttach(config: AgentboxConfig, command?: string[]): Promise<number>;
+  /**
+   * Run a non-interactive command in the running container and report whether
+   * it exited 0 (used to poll tmux session readiness after `runContainer`).
+   */
+  execOk(containerName: string, command: string[]): Promise<boolean>;
+  /**
+   * The local image's Architecture (e.g. "amd64", "arm64"), or undefined if
+   * the image is missing / docker is unavailable. Used by doctor to warn
+   * about emulated (slow) image/host arch mismatches.
+   */
+  imageArchitecture(image: string): Promise<string | undefined>;
+  /**
+   * Labels of a container (e.g. LABEL_YOLO), or {} if the container is
+   * missing / docker is unavailable. Used on reattach to report the
+   * RUNNING container's actual startup mode instead of the current
+   * invocation's flags, which are ignored on reattach.
+   */
+  containerLabels(name: string): Promise<Record<string, string>>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -132,14 +190,18 @@ export interface SessionModule {
   /** Read the real terminal size via `stty size`; falls back to DEFAULT_TTY. */
   readTtySize(): TtySize;
   /**
-   * Build the bash entry script (runs INSIDE the container). It must:
-   *   - reattach if the session already exists (tmux has-session)
-   *   - else create session sized to `tty` with two windows:
+   * Build the bash entry script (runs INSIDE the container as PID 1). It must:
+   *   - skip setup if the session already exists (tmux has-session)
+   *   - else create a DETACHED session sized to `tty` with two windows:
    *       window `main`     → Claude lead, CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
+   *                           + `--teammate-mode tmux` (split panes are no
+   *                           longer the upstream default since v2.1.179)
    *       window `observer` → `node CONTAINER_OBSERVER` (the dashboard)
    *   - bind `C-b t` to `select-layout main-vertical`
    *   - keep `observer` in its OWN window (never a pane in `main`)
-   *   - finally `exec tmux attach -t <session>`
+   *   - finally idle while the session exists (NEVER `exec tmux attach`: an
+   *     attach client as PID 1 means a detach kills the whole sandbox).
+   *     Clients attach via `docker exec` (attachCommand).
    */
   buildEntryScript(config: AgentboxConfig, tty: TtySize): string;
   /** Write buildEntryScript output to config.entryScriptPath; return that path. */

@@ -33,9 +33,22 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && rm -rf /var/lib/apt/lists/* \
     && node --version && npm --version
 
+# ── GitHub CLI (auth is NEVER baked in — ~/.config/gh is bind-mounted ro) ─────
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/* \
+    && gh --version
+
 # ── Global npm tools: Claude Code + tsx ───────────────────────────────────────
-# Pinned to global prefix; no auth baked in.
-RUN npm install -g @anthropic-ai/claude-code tsx \
+# No auth baked in. Pinned defaults for reproducible builds; override for an
+# intentional upgrade:
+#   docker build --build-arg CLAUDE_CODE_VERSION=2.1.221 --build-arg TSX_VERSION=4.24.0 …
+ARG CLAUDE_CODE_VERSION=2.1.220
+ARG TSX_VERSION=4.23.1
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "tsx@${TSX_VERSION}" \
     && npm cache clean --force
 
 # ── Non-root user `agent` ─────────────────────────────────────────────────────
@@ -44,6 +57,10 @@ RUN npm install -g @anthropic-ai/claude-code tsx \
 RUN userdel -r ubuntu 2>/dev/null || true \
     && useradd --create-home --shell /bin/bash --uid 1000 agent \
     && mkdir -p /agentbox /workspace \
+    # Pre-create the cache-volume mount points OWNED BY agent — a named
+    # volume materializing a missing dir would otherwise be root-owned and
+    # break npm/cargo/pip inside the box.
+    && mkdir -p /home/agent/.npm /home/agent/.cargo/registry /home/agent/.cache/pip /home/agent/.config \
     && chown -R agent:agent /home/agent /agentbox /workspace \
     && chmod 755 /agentbox
 

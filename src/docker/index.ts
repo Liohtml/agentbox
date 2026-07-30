@@ -16,11 +16,15 @@ import {
   type AgentboxConfig,
   type DockerModule,
   type TtySize,
+  CACHE_VOLUMES,
   CONTAINER_WORKSPACE,
   CONTAINER_CLAUDE_DIR,
   CONTAINER_CLAUDE_JSON,
   CONTAINER_ENTRY,
+  CONTAINER_GH_CONFIG,
+  CONTAINER_GITCONFIG,
   CONTAINER_OBSERVER,
+  LABEL_YOLO,
 } from "../types.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -89,6 +93,101 @@ async function ok(args: string[]): Promise<boolean> {
   return code === 0;
 }
 
+function isFile(p: string): boolean {
+  try {
+    return fs.statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function isDir(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Build the full `docker run` argv. Exported (and pure — host-fs facts are
+ * injected via `present`) so tests can assert the exact argv without Docker.
+ *
+ * Detached (-d): the entry script — not a tmux attach client — is PID 1, so
+ * detaching a client can never tear the sandbox down. Attaching is a separate
+ * `docker exec` (execAttach). Deliberately NOT --rm: see runContainer's doc
+ * comment in types.ts — a container that exits early stays inspectable via
+ * `docker logs`, and agentbox removes stale stopped containers itself.
+ */
+export function buildRunArgs(
+  config: AgentboxConfig,
+  tty: TtySize,
+  present: { gitconfig: boolean; ghConfig: boolean },
+): string[] {
+  const args = [
+    "run",
+    "-d",
+    "--name",
+    config.containerName,
+    "--label",
+    `${LABEL_YOLO}=${config.yolo}`,
+    // ── bind mounts ──────────────────────────────────────────────────────
+    "-v",
+    `${config.workspace}:${CONTAINER_WORKSPACE}`,
+    "-v",
+    `${config.claudeDir}:${CONTAINER_CLAUDE_DIR}`,
+    "-v",
+    `${config.claudeJson}:${CONTAINER_CLAUDE_JSON}`,
+    "-v",
+    `${config.entryScriptPath}:${CONTAINER_ENTRY}`,
+    "-v",
+    `${config.observerAsset}:${CONTAINER_OBSERVER}`,
+  ];
+
+  // ── host identity, read-only, only when present (git commits + gh auth) ──
+  if (present.gitconfig) {
+    args.push("-v", `${config.gitconfigPath}:${CONTAINER_GITCONFIG}:ro`);
+  }
+  if (present.ghConfig) {
+    args.push("-v", `${config.ghConfigDir}:${CONTAINER_GH_CONFIG}:ro`);
+  }
+
+  // ── persistent tool caches (named volumes; the box itself stays disposable) ─
+  for (const [volume, target] of CACHE_VOLUMES) {
+    args.push("-v", `${volume}:${target}`);
+  }
+
+  args.push(
+    // ── published observer port (loopback only — never expose to the LAN) ─
+    "-p",
+    `127.0.0.1:${config.observerPort}:${config.observerPort}`,
+    // ── resource limits ─────────────────────────────────────────────────
+    "--memory",
+    config.memory,
+    "--cpus",
+    config.cpus,
+  );
+
+  if (config.gpus) {
+    args.push("--gpus", config.gpus);
+  }
+
+  args.push(
+    // ── env ─────────────────────────────────────────────────────────────
+    "-e",
+    `OBSERVER_PORT=${config.observerPort}`,
+    "-e",
+    `COLUMNS=${tty.cols}`,
+    "-e",
+    `LINES=${tty.rows}`,
+    config.image,
+    // Launch via bash so a missing execute bit never blocks startup.
+    "bash",
+    CONTAINER_ENTRY,
+  );
+  return args;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Module implementation
 // ─────────────────────────────────────────────────────────────────────────────
@@ -150,8 +249,15 @@ export const docker: DockerModule = {
   },
 
   async removeContainer(name: string): Promise<void> {
-    // `rm -f` stops + removes. Ignore "no such container" (benign / idempotent).
-    await capture(["rm", "-f", name]);
+    // `rm -f` stops + removes. Ignore "no such container" (benign / idempotent),
+    // but surface every other failure — otherwise `down` reports success while
+    // the container still exists.
+    const { code, stderr } = await capture(["rm", "-f", name]);
+    if (code !== 0 && !/no such container/i.test(stderr)) {
+      throw new Error(
+        `docker rm -f ${name} failed (exit ${code})${stderr ? `: ${stderr.trim()}` : ""}`,
+      );
+    }
   },
 
   async ensureHostMounts(config: AgentboxConfig): Promise<void> {
@@ -160,71 +266,105 @@ export const docker: DockerModule = {
     fs.mkdirSync(config.claudeDir, { recursive: true });
 
     // claudeJson must be a FILE so Docker bind-mounts a file (not a dir).
-    // Edge case: a prior bad mount may have created it as a directory — leave
-    // that alone (can't safely rm), but ensure a file exists if nothing does.
-    let needsTouch = true;
+    let target: fs.Stats | undefined;
     try {
-      const st = fs.statSync(config.claudeJson);
-      if (st.isFile()) needsTouch = false;
-      // If it's a directory we cannot turn it into a file here; leave as-is.
-      else if (st.isDirectory()) needsTouch = false;
+      target = fs.lstatSync(config.claudeJson);
     } catch {
       // Does not exist yet → create it below.
     }
-    if (needsTouch) {
+
+    if (target?.isDirectory()) {
+      // A prior bad mount can leave a directory here; Docker would happily
+      // mount it and Claude Code would fail opaquely inside the container.
+      throw new Error(
+        `${config.claudeJson} is a directory, but Claude Code needs a file there.\n` +
+          `Remove it (rmdir '${config.claudeJson}') and run agentbox again.`,
+      );
+    }
+
+    if (target?.isSymbolicLink()) {
+      // Dotfile managers often symlink ~/.claude.json. Follow it: if the
+      // target exists it must be a FILE (a symlink to a directory would
+      // otherwise sail through and Docker would mount a directory); if it
+      // dangles, create the target through the symlink (flag "w" — "wx"
+      // would fail with a confusing EEXIST on the link itself).
+      let followed: fs.Stats | undefined;
+      try {
+        followed = fs.statSync(config.claudeJson);
+      } catch {
+        fs.writeFileSync(config.claudeJson, "{}\n", { flag: "w" });
+        return;
+      }
+      if (!followed.isFile()) {
+        throw new Error(
+          `${config.claudeJson} is a symlink to something other than a file.\n` +
+            `Fix or remove the symlink and run agentbox again.`,
+        );
+      }
+      return;
+    }
+
+    if (!target) {
       fs.mkdirSync(path.dirname(config.claudeJson), { recursive: true });
-      // Create an empty JSON object so Claude Code reads valid JSON.
-      fs.writeFileSync(config.claudeJson, "{}\n", { flag: "wx" });
+      // Create an empty JSON object so Claude Code reads valid JSON. "wx" +
+      // ignored EEXIST keeps a concurrent create benign.
+      try {
+        fs.writeFileSync(config.claudeJson, "{}\n", { flag: "wx" });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      }
     }
   },
 
   async runContainer(config: AgentboxConfig, tty: TtySize): Promise<number> {
-    const args = [
-      "run",
-      "-it",
-      "--rm",
-      "--name",
-      config.containerName,
-      // ── bind mounts ──────────────────────────────────────────────────────
-      "-v",
-      `${config.workspace}:${CONTAINER_WORKSPACE}`,
-      "-v",
-      `${config.claudeDir}:${CONTAINER_CLAUDE_DIR}`,
-      "-v",
-      `${config.claudeJson}:${CONTAINER_CLAUDE_JSON}`,
-      "-v",
-      `${config.entryScriptPath}:${CONTAINER_ENTRY}`,
-      "-v",
-      `${config.observerAsset}:${CONTAINER_OBSERVER}`,
-      // ── published observer port (loopback only — never expose to the LAN) ─
-      "-p",
-      `127.0.0.1:${config.observerPort}:${config.observerPort}`,
-      // ── resource limits ─────────────────────────────────────────────────
-      "--memory",
-      config.memory,
-      "--cpus",
-      config.cpus,
-      // ── env ─────────────────────────────────────────────────────────────
-      "-e",
-      `OBSERVER_PORT=${config.observerPort}`,
-      "-e",
-      `COLUMNS=${tty.cols}`,
-      "-e",
-      `LINES=${tty.rows}`,
-    ];
-    args.push(
-      config.image,
-      // Launch via bash so a missing execute bit never blocks startup.
-      "bash",
-      CONTAINER_ENTRY,
-    );
+    const args = buildRunArgs(config, tty, {
+      gitconfig: isFile(config.gitconfigPath),
+      ghConfig: isDir(config.ghConfigDir),
+    });
     return inherit(args);
   },
 
   async execAttach(config: AgentboxConfig, command?: string[]): Promise<number> {
-    const cmd =
-      command ?? ["bash", "-lc", `tmux attach -t '${config.sessionName}'`];
+    const cmd = command ?? [
+      "bash",
+      "-lc",
+      // Same '\'' single-quote escaping the session module uses — keeps a
+      // future configurable session name injection-safe.
+      `tmux attach -t '${config.sessionName.replace(/'/g, `'\\''`)}'`,
+    ];
     const args = ["exec", "-it", config.containerName, ...cmd];
     return inherit(args);
+  },
+
+  async execOk(containerName: string, command: string[]): Promise<boolean> {
+    return ok(["exec", containerName, ...command]);
+  },
+
+  async imageArchitecture(image: string): Promise<string | undefined> {
+    const { code, stdout } = await capture([
+      "image",
+      "inspect",
+      "--format",
+      "{{.Architecture}}",
+      image,
+    ]);
+    const arch = stdout.trim();
+    return code === 0 && arch.length > 0 ? arch : undefined;
+  },
+
+  async containerLabels(name: string): Promise<Record<string, string>> {
+    const { code, stdout } = await capture([
+      "inspect",
+      "--format",
+      "{{json .Config.Labels}}",
+      name,
+    ]);
+    if (code !== 0) return {};
+    try {
+      const parsed = JSON.parse(stdout.trim());
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
   },
 };

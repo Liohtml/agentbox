@@ -45,6 +45,8 @@ Invoked as `agentbox <command> [flags]` (via `bin/agentbox.mjs` or
 - `--cpus <val>` — docker cpu limit, e.g. `4` (also env `CPUS`).
 - `--port <n>` — observer port (default 4317).
 - `--network <mode>` — `docker build --network` mode, e.g. `host` (also env `DOCKER_NETWORK`). Unset → Docker's default build network.
+- `--gpus <val>` — `docker run --gpus` passthrough, e.g. `all` (Linux/NVIDIA).
+- `--yolo` — launch the lead with `--dangerously-skip-permissions` (teammates inherit it). Opt-in only; recorded as a `agentbox.yolo` container label so reattach can report the box's actual mode.
 - `--no-cache` — (rebuild/up) force a clean image build.
 
 ### Env overrides (precedence: **flag > env > default**)
@@ -66,7 +68,9 @@ Defaults (`DEFAULTS` in types):
 - `claudeDir` default = `~/.claude`, `claudeJson` default = `~/.claude.json`
 - `dockerfile` = `assets/Dockerfile`, `buildContext` = `assets/`
 - `observerAsset` = `assets/observer.mjs`
-- `entryScriptPath` = a host temp path (e.g. `os.tmpdir()/agentbox-entry.sh`)
+- `entryScriptPath` = a host temp path in a per-user 0700 subdir
+  (`os.tmpdir()/agentbox-<uid>/entry.sh`) — never a fixed path in the shared
+  temp dir (tamper/TOCTOU on multi-user hosts)
 
 ---
 
@@ -99,6 +103,14 @@ export const session: SessionModule; // see src/types.ts
 | `config.claudeJson` (`~/.claude.json`) | `/home/agent/.claude.json` | **touch first** so Docker mounts a file, not a dir |
 | `config.entryScriptPath`   | `/agentbox/entry.sh`         | run via `bash` (no execute-bit reliance) |
 | `config.observerAsset`     | `/agentbox/observer.mjs`     | the dashboard                          |
+| `config.gitconfigPath` *(if present)* | `/home/agent/.gitconfig` | **read-only** — git identity reuse |
+| `config.ghConfigDir` *(if present)*   | `/home/agent/.config/gh` | **read-only** — gh CLI auth reuse  |
+
+Named cache volumes (`CACHE_VOLUMES` in types.ts): `agentbox-npm-cache`,
+`agentbox-cargo-registry`, `agentbox-pip-cache` → the box itself stays
+disposable (removed via `down`, or replaced by `up`'s stale-container
+cleanup — see §6.7), only tool downloads persist. Host identity mounts are
+read-only, existence-gated, and NEVER copied into the image.
 
 - Publish `-p <observerPort>:<observerPort>`.
 - Apply `--memory <config.memory>` and `--cpus <config.cpus>`.
@@ -117,8 +129,19 @@ export const session: SessionModule; // see src/types.ts
    `main`.
 4. **Launch the entry script via `bash /agentbox/entry.sh`** so a missing
    execute bit never blocks startup.
-5. Set `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in the `main` window.
+5. Set `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in the `main` window, and
+   launch the lead with `--teammate-mode tmux`: since Claude Code v2.1.179
+   the default teammateMode is `in-process`, which silently disables the
+   split-pane layout.
 6. Read the real TTY size via `stty size` so tmux isn't stuck at 80×24.
+7. **The tmux attach client must NEVER be container PID 1.** The container
+   runs detached (`docker run -d`, deliberately NOT `--rm`); the entry script
+   sets the session up and idles while it exists, and clients attach via
+   `docker exec … tmux attach`. Otherwise `C-b d` (detach) exits PID 1 and
+   kills every agent. Not using `--rm` means a container that exits early
+   (entry-script crash) stays inspectable via `docker logs`; `up` removes a
+   stale stopped container before starting fresh, and `down` removes it
+   explicitly.
 
 ---
 

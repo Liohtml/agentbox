@@ -10,10 +10,11 @@
  * It surfaces live agent-team activity by tailing the Claude projects dir.
  */
 import { createServer } from "node:http";
-import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
+import { readdirSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
-const PORT = Number(process.env.OBSERVER_PORT || 4317);
+const RAW_PORT = Number(process.env.OBSERVER_PORT || 4317);
+const PORT = Number.isInteger(RAW_PORT) && RAW_PORT > 0 && RAW_PORT <= 65535 ? RAW_PORT : 4317;
 const HOST = "0.0.0.0";
 const PROJECTS_DIR = process.env.CLAUDE_PROJECTS_DIR || "/home/agent/.claude/projects";
 
@@ -49,15 +50,6 @@ function collectSessions() {
   return out.slice(0, 50);
 }
 
-function tail(file, n) {
-  try {
-    const lines = readFileSync(file, "utf8").trim().split("\n");
-    return lines.slice(-n);
-  } catch {
-    return [];
-  }
-}
-
 const PAGE = `<!doctype html><html><head><meta charset="utf-8">
 <title>agentbox observer</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -81,6 +73,10 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8">
   <tbody id="rows"><tr><td colspan="4" class="muted">loading…</td></tr></tbody></table>
 </main>
 <script>
+// Project/session names come from filesystem paths that in-container code can
+// create — always HTML-escape before rendering (stored-XSS guard).
+const esc = (v) => String(v).replace(/[&<>"']/g, (c) =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function refresh(){
   try{
     const r = await fetch('/api/sessions'); const data = await r.json();
@@ -88,7 +84,7 @@ async function refresh(){
     if(!data.sessions.length){ rows.innerHTML='<tr><td colspan="4" class="muted">no active sessions yet</td></tr>'; return; }
     rows.innerHTML = data.sessions.map(s=>{
       const ago = Math.max(0, Math.round((data.now - s.mtime)/1000));
-      return '<tr><td>'+s.project+'</td><td>'+s.session.slice(0,8)+'…</td><td>'+(s.size/1024|0)+' KB</td><td>'+ago+'s ago</td></tr>';
+      return '<tr><td>'+esc(s.project)+'</td><td>'+esc(s.session.slice(0,8))+'…</td><td>'+(s.size/1024|0)+' KB</td><td>'+ago+'s ago</td></tr>';
     }).join('');
   }catch(e){ /* ignore transient */ }
 }
@@ -109,6 +105,18 @@ const server = createServer((req, res) => {
   }
   res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
   res.end(PAGE);
+});
+
+server.on("error", (err) => {
+  // Without this handler a bind failure (e.g. EADDRINUSE) is an unhandled
+  // exception and the observer tmux window dies with an unreadable stack.
+  if (err && err.code === "EADDRINUSE") {
+    console.error(`[observer] port ${PORT} is already in use inside the container.`);
+    console.error(`[observer] stop the other process or restart agentbox with --port <n>.`);
+  } else {
+    console.error(`[observer] server error: ${err && err.message ? err.message : err}`);
+  }
+  process.exitCode = 1;
 });
 
 server.listen(PORT, HOST, () => {

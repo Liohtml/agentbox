@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { resolveConfig } from "../src/cli/config.ts";
+import { resolveConfig, validateConfig } from "../src/cli/config.ts";
 import { DEFAULTS } from "../src/types.ts";
 
 /** A clean env with none of the agentbox override vars set. */
@@ -81,6 +81,20 @@ test("buildNetwork: flag > env, unset → undefined", () => {
   );
 });
 
+test("yolo is opt-in only (boolean flag), gpus passes through", () => {
+  assert.equal(resolveConfig(emptyEnv(), {}).yolo, false);
+  assert.equal(resolveConfig(emptyEnv(), { yolo: true }).yolo, true);
+  assert.equal(resolveConfig(emptyEnv(), {}).gpus, undefined);
+  assert.equal(resolveConfig(emptyEnv(), { gpus: "all" }).gpus, "all");
+});
+
+test("git identity / gh auth candidate paths default under home", () => {
+  const home = os.homedir();
+  const c = resolveConfig(emptyEnv(), {});
+  assert.equal(c.gitconfigPath, path.join(home, ".gitconfig"));
+  assert.equal(c.ghConfigDir, path.join(home, ".config", "gh"));
+});
+
 test("claude paths default under the home directory", () => {
   const home = os.homedir();
   const c = resolveConfig(emptyEnv(), {});
@@ -96,7 +110,52 @@ test("asset paths point at the repo's assets dir and Dockerfile", () => {
   assert.equal(path.basename(c.observerAsset), "observer.mjs");
 });
 
-test("entryScriptPath lives under the OS temp dir", () => {
+test("entryScriptPath lives in a per-user subdir of the OS temp dir (not a fixed shared path)", () => {
   const c = resolveConfig(emptyEnv(), {});
-  assert.equal(c.entryScriptPath, path.join(os.tmpdir(), "agentbox-entry.sh"));
+  const dir = path.dirname(c.entryScriptPath);
+  assert.equal(path.dirname(dir), os.tmpdir());
+  assert.match(path.basename(dir), /^agentbox-/);
+  assert.equal(path.basename(c.entryScriptPath), "entry.sh");
+  // Must not be the old world-shared fixed path.
+  assert.notEqual(c.entryScriptPath, path.join(os.tmpdir(), "agentbox-entry.sh"));
+});
+
+// ── validateConfig ──────────────────────────────────────────────────────────
+
+test("validateConfig passes a default config", () => {
+  assert.deepEqual(validateConfig(resolveConfig(emptyEnv(), {})), []);
+});
+
+test("validateConfig rejects a non-numeric port", () => {
+  const problems = validateConfig(resolveConfig(emptyEnv(), { port: "abc" }));
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /--port/);
+});
+
+test("validateConfig rejects out-of-range ports", () => {
+  assert.equal(validateConfig(resolveConfig(emptyEnv(), { port: "0" })).length, 1);
+  assert.equal(validateConfig(resolveConfig(emptyEnv(), { port: "70000" })).length, 1);
+  assert.equal(validateConfig(resolveConfig(emptyEnv(), { port: "4317.5" })).length, 1);
+});
+
+test("validateConfig rejects malformed --memory and --cpus", () => {
+  assert.match(validateConfig(resolveConfig(emptyEnv(), { memory: "banana" }))[0], /--memory/);
+  assert.match(validateConfig(resolveConfig(emptyEnv(), { cpus: "four" }))[0], /--cpus/);
+});
+
+test("validateConfig accepts common docker resource formats", () => {
+  for (const memory of ["4g", "512m", "1024K", "2000000"]) {
+    assert.deepEqual(validateConfig(resolveConfig(emptyEnv(), { memory })), [], memory);
+  }
+  for (const cpus of ["4", "1.5", "0.5"]) {
+    assert.deepEqual(validateConfig(resolveConfig(emptyEnv(), { cpus })), [], cpus);
+  }
+});
+
+test("validateConfig rejects ':' in mount source paths (docker -v delimiter)", () => {
+  const problems = validateConfig(
+    resolveConfig(emptyEnv(), { workspace: "/home/u/proj:v2" }),
+  );
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /workspace/);
 });

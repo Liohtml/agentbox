@@ -6,6 +6,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { session } from "../src/session/index.ts";
 import {
   CONTAINER_OBSERVER,
@@ -24,6 +27,9 @@ function baseConfig(over: Partial<AgentboxConfig> = {}): AgentboxConfig {
     observerPort: 4317,
     memory: "4g",
     cpus: "4",
+    yolo: false,
+    gitconfigPath: "/home/u/.gitconfig",
+    ghConfigDir: "/home/u/.config/gh",
     dockerfile: "/repo/assets/Dockerfile",
     buildContext: "/repo/assets",
     observerAsset: "/repo/assets/observer.mjs",
@@ -44,6 +50,18 @@ test("enables CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 in the main window", () => 
   assert.match(s, /CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1/);
   // It is sent to the 'main' window and launches claude.
   assert.match(s, /send-keys -t "\$SESSION":main .*claude/);
+});
+
+test("launches the lead with --teammate-mode tmux (split panes are no longer the upstream default)", () => {
+  const s = session.buildEntryScript(baseConfig(), TTY);
+  assert.match(s, /claude --teammate-mode tmux/);
+});
+
+test("--yolo adds --dangerously-skip-permissions to the lead; default does not", () => {
+  const on = session.buildEntryScript(baseConfig({ yolo: true }), TTY);
+  assert.match(on, /--dangerously-skip-permissions/);
+  const off = session.buildEntryScript(baseConfig(), TTY);
+  assert.doesNotMatch(off, /--dangerously-skip-permissions/);
 });
 
 test("creates the observer in its OWN window (not a pane in main)", () => {
@@ -75,10 +93,21 @@ test("binds C-b t to select-layout main-vertical", () => {
   assert.match(s, /tmux bind-key -T prefix t select-layout main-vertical/);
 });
 
-test("reattaches if the session already exists", () => {
+test("skips setup when the session already exists (idempotent re-run)", () => {
   const s = session.buildEntryScript(baseConfig(), TTY);
-  assert.match(s, /tmux has-session -t "\$SESSION"/);
-  assert.match(s, /exec tmux attach -t "\$SESSION"/);
+  assert.match(s, /if ! tmux has-session -t "\$SESSION"/);
+});
+
+test("PID 1 idles while the session lives — NEVER 'exec tmux attach' (a detach would kill the sandbox)", () => {
+  const s = session.buildEntryScript(baseConfig(), TTY);
+  assert.doesNotMatch(s, /exec tmux attach/);
+  // Keep-alive loop bound to the tmux session's lifetime.
+  assert.match(s, /while tmux has-session -t "\$SESSION"/);
+});
+
+test("observer window keeps its output readable after a crash (remain-on-exit)", () => {
+  const s = session.buildEntryScript(baseConfig(), TTY);
+  assert.match(s, /set-option -w -t "\$SESSION":observer remain-on-exit on/);
 });
 
 test("uses a bash shebang and strict mode", () => {
@@ -116,4 +145,33 @@ test("main window is selected last so the user lands on the lead", () => {
     s.indexOf("new-window") < s.indexOf("select-window"),
     "observer window is created before selecting main",
   );
+});
+
+// ── writeEntryScript: temp-dir ownership/permission hardening ──────────────
+// mkdirSync's `mode` only applies when it CREATES the directory; if another
+// local process pre-created it (predictable path: agentbox-<uid>), the mode
+// is silently ignored. writeEntryScript must verify ownership/permissions
+// itself rather than trusting a pre-existing directory. POSIX-only (no
+// process.getuid on Windows).
+const posixOnly = typeof process.getuid === "function" ? test : test.skip;
+
+posixOnly("writeEntryScript succeeds when it creates the temp dir itself", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentbox-test-"));
+  fs.rmSync(dir, { recursive: true, force: true }); // let writeEntryScript create it fresh
+  const scriptPath = path.join(dir, "entry.sh");
+  const written = session.writeEntryScript(baseConfig({ entryScriptPath: scriptPath }), TTY);
+  assert.equal(written, scriptPath);
+  assert.ok(fs.existsSync(scriptPath));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+posixOnly("writeEntryScript refuses a pre-existing world-writable temp dir", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentbox-test-"));
+  fs.chmodSync(dir, 0o777); // simulate another local user's permissive pre-created dir
+  const scriptPath = path.join(dir, "entry.sh");
+  assert.throws(
+    () => session.writeEntryScript(baseConfig({ entryScriptPath: scriptPath }), TTY),
+    /refusing to write the entry script/,
+  );
+  fs.rmSync(dir, { recursive: true, force: true });
 });

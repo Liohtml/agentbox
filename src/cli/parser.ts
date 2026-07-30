@@ -8,7 +8,7 @@
  */
 
 /** Long-form flags that consume a following value. */
-const VALUE_FLAGS = new Set(["workspace", "memory", "cpus", "port", "network"]);
+const VALUE_FLAGS = new Set(["workspace", "memory", "cpus", "port", "network", "gpus"]);
 
 export interface ParsedArgs {
   /** First positional, or "up" when none is supplied. */
@@ -21,11 +21,19 @@ export interface ParsedArgs {
   helpRequested: boolean;
   /** True when the command was given explicitly (vs. defaulted to "up"). */
   hasExplicitCommand: boolean;
+  /**
+   * Value flags (e.g. --port) given with no following value, in order
+   * encountered. The router treats this as a hard error rather than
+   * silently falling back to a default (a bare `--gpus` should not
+   * silently run without a GPU).
+   */
+  missingValueFlags: string[];
 }
 
 export function parseArgs(argv: string[]): ParsedArgs {
   const flags: Record<string, string | boolean> = {};
   const positionals: string[] = [];
+  const missingValueFlags: string[] = [];
 
   for (let i = 0; i < argv.length; i++) {
     const tok = argv[i];
@@ -51,8 +59,12 @@ export function parseArgs(argv: string[]): ParsedArgs {
           flags[body] = next;
           i++;
         } else {
-          // Missing value — record presence; validation happens downstream.
+          // Missing value — record presence for backward-compat, but flag it
+          // as an error too: silently falling back to a default (e.g. --gpus
+          // with no value quietly running without a GPU) is worse than
+          // failing fast.
           flags[body] = true;
+          missingValueFlags.push(body);
         }
       } else {
         flags[body] = true;
@@ -78,5 +90,12 @@ export function parseArgs(argv: string[]): ParsedArgs {
   const command = hasExplicitCommand ? positionals[0] : "up";
   const helpRequested = flags.help === true || flags.h === true;
 
-  return { command, flags, positionals, helpRequested, hasExplicitCommand };
+  return {
+    command,
+    flags,
+    positionals,
+    helpRequested,
+    hasExplicitCommand,
+    missingValueFlags,
+  };
 }

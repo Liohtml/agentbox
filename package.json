@@ -1,8 +1,12 @@
 {
-  "name": "agentbox",
+  "name": "@liohtml/agentbox",
   "version": "0.1.0",
   "description": "One-command, Docker-isolated agentic coding sandbox: tmux + Claude Code (Agent Teams) + web Observer.",
   "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "bin": {
     "agentbox": "bin/agentbox.mjs"
   },
@@ -16,7 +20,8 @@
     "agentbox": "tsx src/index.ts",
     "doctor": "tsx src/index.ts doctor",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test tests/*.test.ts"
+    "test": "node --import tsx --test tests/*.test.ts",
+    "prepublishOnly": "npm run typecheck && npm test"
   },
   "engines": {
     "node": ">=22"
@@ -43,8 +48,10 @@
   },
   "author": "Liohtml",
   "license": "MIT",
+  "dependencies": {
+    "tsx": "^4.19.0"
+  },
   "devDependencies": {
-    "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "@types/node": "^22.0.0"
   }
