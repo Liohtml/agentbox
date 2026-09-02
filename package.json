@@ -49,7 +49,7 @@
   "author": "Liohtml",
   "license": "MIT",
   "dependencies": {
-    "tsx": "^4.19.0"
+    "tsx": "^4.23.13"
   },
   "devDependencies": {
     "typescript": "^5.6.0",
